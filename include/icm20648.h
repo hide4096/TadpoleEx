@@ -7,17 +7,26 @@
 class icm20648{
     public:
         int init(SPIClass* wire,const uint32_t _clock,const int _cs);
-        uint16_t accelX();
-        uint16_t accelY();
-        uint16_t accelZ();
-        uint16_t gyroX();
-        uint16_t gyroY();
-        uint16_t gyroZ();
+        int changeSensitivity(const uint8_t _gyro,const uint8_t _accel);
+        int16_t accelX_raw();
+        int16_t accelY_raw();
+        int16_t accelZ_raw();
+        int16_t gyroX_raw();
+        int16_t gyroY_raw();
+        int16_t gyroZ_raw();
         float temp();
+        float accelX();
+        float accelY();
+        float accelZ();
+        float gyroX();
+        float gyroY();
+        float gyroZ();
     private:
         SPIClass* mywire;
         SPISettings spi_settings;
         int cs;
+        float gyro_sensitivity;
+        float accel_sensitivity;
         uint8_t readWHO_AM_I();
         uint8_t readRegister(const uint8_t _adrs);
         void writeRegister(const uint8_t _adrs,const uint8_t _data);

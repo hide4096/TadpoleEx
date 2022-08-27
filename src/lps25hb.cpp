@@ -73,7 +73,6 @@ int lps25hb::init(SPIClass* wire,const uint32_t _clock,const int _cs){
 
     zero_press = press();
     zero_temp = temp();
-    Serial.println(zero_press);
 
     return 0;
 }
