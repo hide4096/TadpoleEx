@@ -12,8 +12,17 @@
 #include "MadgwickAHRS.h"
 
 #define AUTOLED 4
-#define WIFI_TIMEOUTMS 5000
+#define WIFI_TIMEOUT_MS 5000
 #define LPF_GAIN 0.001
+#define BROADCAST_FREQ_HZ 100
+
+#define AIL 0
+#define ELE 1
+#define THR 2
+#define RUD 3
+#define CH5 4
+#define CH6 5
+
 
 //セマフォとかタイマーとか
 volatile SemaphoreHandle_t sp_control;
@@ -25,7 +34,7 @@ hw_timer_t* tm_wifi = NULL;
 
 //デバッグ用WiFiAP
 const char *ssid = "TadpoleEx";
-const char *pass = "07033208416";
+const char *pass = "07033208416"; //作者の電話番号
 AsyncUDP udp; 
 
 //SBUS入力
@@ -40,20 +49,26 @@ const uint8_t _ALT_CS = 15;
 icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
-float x,y,z;
-float lx,ly,lz;
+float front_acc,right_acc,up_acc;
+float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
 Madgwick mdf;
-void getAttitude(){
-  x = imu.gyroX()-ox,y = imu.gyroY()-oy,z=imu.gyroZ()-oz;
-  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * x;
-  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * y;
-  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * z;
 
-  mdf.updateIMU(lx*-1.0,ly,lz*-1.0,imu.accelX()*-1.0,imu.accelY(),imu.accelZ()*-1.0);
+void getAttitude(){
+  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
+  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
+  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
+  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
+
+  float ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
+
+  mdf.updateIMU(lx,ly,lz,ax,ay,az);
   pitch = mdf.getRoll();
   yaw = mdf.getYaw();
   roll = mdf.getPitch();
+  front_acc = ay;
+  right_acc = ax;
+  up_acc = az;
 }
 
 //ToFセンサ
@@ -70,6 +85,9 @@ VL53L1X dist;
   CH5_State
   0 → 右投下
   1 → 左投下
+
+  SBUSのレンジ
+  2^11(0~2047)
 */
 
 const uint16_t _PWM_DutyMin = 3542;
@@ -78,33 +96,33 @@ const uint16_t _PWM_DutyCenter = (_PWM_DutyMax - _PWM_DutyMin) / 2 + _PWM_DutyMi
 const uint8_t _CH_Port[5] = {27,26,25,33,32};
 const uint16_t _CH_Neutral[5] = {_PWM_DutyCenter,_PWM_DutyCenter,_PWM_DutyMin,_PWM_DutyCenter,_PWM_DutyCenter};
 const float _SBUS2PWM = 2.021;
-int16_t DutyRatio[5];
+int16_t Output_SBUS[5];
 uint8_t CH5_State = 0;
 bool is_CH5_reset = true;
 
 //サーボ制御
 void controlServos(){
   //投下機構
-  if(sbus_data[4] > 1024){
+  if(sbus_data[CH5] > 1024){
     if(is_CH5_reset){
       if(CH5_State == 0){
-        DutyRatio[4] = 0;
+        Output_SBUS[CH5] = 0;
       }else{
-        DutyRatio[4] = 2047;
+        Output_SBUS[CH5] = 2047;
       }
       CH5_State = 1 - CH5_State;
       is_CH5_reset = false;
     }
   }else{
       is_CH5_reset = true;
-      DutyRatio[4] = 960;
+      Output_SBUS[CH5] = 960;
   }
 
   //PWM書き込み
   for(uint8_t i = 0;i<5;i++){
-    if(DutyRatio[i] > 2047) DutyRatio[i] = 2047;
-    else if(DutyRatio[i] < 0) DutyRatio[i] = 0;
-    ledcWrite(i,(DutyRatio[i] - 1024) * _SBUS2PWM + _PWM_DutyCenter);
+    if(Output_SBUS[i] > 2047) Output_SBUS[i] = 2047;
+    else if(Output_SBUS[i] < 0) Output_SBUS[i] = 0;
+    ledcWrite(i,(Output_SBUS[i] - 1024) * _SBUS2PWM + _PWM_DutyCenter);
   }
 }
 
@@ -112,56 +130,63 @@ void controlServos(){
 void readSBUS(){
   if(sbus_rx.Read()){
     sbus_data = sbus_rx.ch();
-    for(uint8_t i = 0;i<5;i++){
-      DutyRatio[i] = sbus_data[i];
-    }
   }
 }
 
-//機体情報をUDPで放送
+/*
+  機体情報をUDPで放送
+  
+  起動からの経過時間[ms]
+  ピッチ[°] ヨー[°] ロール[°]
+  エレベーター[SBUS] スロットル[SBUS] ラダー[SBUS]
+  前方加速度[G] 右方加速度[G] 上方加速度[G]
+
+*/
 void sendUDP(){
     char str[128];
-    sprintf(str,"%ldms,%.3f,%.3f,%.3f,%d,%d,%d,%.3f",
+    sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f",
       esp_timer_get_time()/1000,
       pitch,yaw,roll,
-      sbus_data[1],sbus_data[2],sbus_data[3],
-      imu.accelY()
+      Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
+      front_acc,right_acc,up_acc
     );
     udp.broadcastTo(str,8901);
     delay(1);
 }
 
-//PID制御
-float before_pitch,I_pitch;
-float pitch_kp=10.0,pitch_ki=0.0,pitch_kd=8.0;
+//PD制御
+float before_pitch;
+float pitch_kp=10.0,pitch_kd=8.0;
 float target_pitch = 15.0;
-float before_roll,I_roll;
-float roll_kp=10.0,roll_ki=0.0,roll_kd=8.0;
+float before_roll;
+float roll_kp=10.0,roll_kd=8.0;
 float target_roll = 50.0;
-void PID(){
-  if(sbus_data[5] > 1024) return;
+
+void PDcontrol(){
+  //CH6で自動操縦切り替え
+  if(sbus_data[CH6] > 1024) return;
+
   float diff_pitch = target_pitch - pitch;
-  DutyRatio[1] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
-  I_pitch += diff_pitch;
+  Output_SBUS[ELE] = sbus_data[ELE] - diff_pitch * pitch_kp + (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
 
   float diff_roll = target_roll - roll;
-  DutyRatio[3] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
-  I_roll += diff_roll;
+  Output_SBUS[RUD] = sbus_data[RUD] - diff_roll * roll_kp + (before_roll - roll) * roll_kd;
   before_roll = roll;
 }
 
-//制御系（100Hz）
+//制御系（サーボのPWM周波数に合わせて50Hz）
 void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
     readSBUS();
-    PID();
+    PDcontrol();
     controlServos();
   }
 }
 
-//センサ処理(1kHz)
+//センサ処理
+const int _sensorfreq_Hz = 1000;
 void fetchSensors(void *pvParam){
   while(1){
     xSemaphoreTake(sp_sensor,portMAX_DELAY);
@@ -169,7 +194,7 @@ void fetchSensors(void *pvParam){
   }
 }
 
-//WiFi通信(100Hz,CPU0)
+//WiFi通信(CPU0)
 void commViaWiFi(void *pvParam){
   while (1){
     xSemaphoreTake(sp_wifi,portMAX_DELAY);
@@ -187,6 +212,9 @@ void IRAM_ATTR onTimer_wifi(){
   xSemaphoreGiveFromISR(sp_wifi,NULL);
 }
 
+const int _servofreq_Hz = 50;
+const int _controlcycle_us = 1000000 / _servofreq_Hz;
+
 void setup() {
   //シリアル通信開始
   Serial.begin(115200);
@@ -194,17 +222,18 @@ void setup() {
 
   //PWM設定
   for(uint8_t i = 0;i<5;i++){
-    ledcSetup(i,50,16);
+    ledcSetup(i,_servofreq_Hz,16);
     ledcAttachPin(_CH_Port[i],i);
     ledcWrite(i,_CH_Neutral[i]);
   }
 
   //センサ初期化
-  if(imu.init(new SPIClass(VSPI),1000000,_IMU_CS) == -1){
+  if(imu.init(new SPIClass(VSPI),1000*1000,_IMU_CS) == -1){
     Serial.printf("IMU init failed.\r\n");
     while(1);
   }
 
+  //ジャイロオフセット
   vTaskDelay(3000/portTICK_RATE_MS);
   for(int i=0;i<1000;i++){
     ox+=imu.gyroX();
@@ -214,12 +243,10 @@ void setup() {
   }
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
 
-  /*
-  if(alt.init(new SPIClass(HSPI),1000000,_ALT_CS) == -1){
+  if(alt.init(new SPIClass(HSPI),1000*1000,_ALT_CS) == -1){
     Serial.printf("ALT init failed.\r\n");
-    while(1);
-    }
-  */
+    //while(1);
+  }
 
   /*
   Wire.begin();
@@ -243,10 +270,10 @@ void setup() {
   //WiFi接続
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid,pass);
-  if(WiFi.waitForConnectResult(WIFI_TIMEOUTMS) != WL_CONNECTED) Serial.println("fail");
+  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED) Serial.println("fail");
 
   //フィルタ起動
-  mdf.begin(1000);
+  mdf.begin(_sensorfreq_Hz);
 
   //タスク追加
   xTaskCreateUniversal(control,"control",8192,NULL,1,NULL,APP_CPU_NUM);
@@ -255,17 +282,18 @@ void setup() {
 
   //タイマー設定
   //タイマー1が死んでるw
-  tm_control = timerBegin(0,getApbFrequency()/1000000,true);
-  tm_sensor = timerBegin(2,getApbFrequency()/1000000,true);
-  tm_wifi = timerBegin(3,getApbFrequency()/1000000,true);
+  const int _microsecond = getApbFrequency()/1000000;
+  tm_control = timerBegin(0,_microsecond,true);
+  tm_sensor = timerBegin(2,_microsecond,true);
+  tm_wifi = timerBegin(3,_microsecond,true);
   timerAttachInterrupt(tm_control, &onTimer_control, true);
   timerAttachInterrupt(tm_sensor, &onTimer_sensor, true);
   timerAttachInterrupt(tm_wifi, &onTimer_wifi, true);
 
   //割り込み設定
-  timerAlarmWrite(tm_control,10000,true);
-  timerAlarmWrite(tm_sensor,1000,true);
-  timerAlarmWrite(tm_wifi,10000,true);
+  timerAlarmWrite(tm_control,_controlcycle_us,true);
+  timerAlarmWrite(tm_sensor,_sensorfreq_Hz,true);
+  timerAlarmWrite(tm_wifi,BROADCAST_FREQ_HZ,true);
 
   //タイマー起動
   timerAlarmEnable(tm_control);
