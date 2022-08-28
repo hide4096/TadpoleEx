@@ -4,6 +4,7 @@
 #include <Ticker.h>
 #include <WiFi.h>
 #include <AsyncUDP.h>
+#include <math.h>
 #include "icm20648.h"
 #include "lps25hb.h"
 #include "VL53L1X.h"
@@ -41,38 +42,45 @@ AsyncUDP udp;
 bfs::SbusRx sbus_rx(&Serial2);
 std::array<int16_t,bfs::SbusRx::NUM_CH()> sbus_data;
 
-//大気圧センサ
-lps25hb alt;
-const uint8_t _ALT_CS = 15;
-
 //6軸IMUセンサ
 icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
 float front_acc,right_acc,up_acc;
+float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
 Madgwick mdf;
 
-void getAttitude(){
-  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
+void IRAM_ATTR getPosture(){
+  float gx = imu.gyroX()-ox,gy = imu.gyroY()-oy,gz=imu.gyroZ()-oz;
   lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
   ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
   lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
 
-  float ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
+  ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
 
-  mdf.updateIMU(lx,ly,lz,ax,ay,az);
-  pitch = mdf.getRoll();
-  yaw = mdf.getYaw();
-  roll = mdf.getPitch();
-  front_acc = ay;
-  right_acc = ax;
-  up_acc = az;
+  mdf.updateIMU(lx*-1.0,ly,lz*-1.0,ax,ay,az);
 }
 
 //ToFセンサ
 VL53L1X dist;
+//大気圧センサ
+lps25hb alt;
+const uint8_t _ALT_CS = 15;
+float distance_Tof = -1.0;
+float altitude_press;
+
+void IRAM_ATTR readSensor(){
+  distance_Tof = dist.read();
+  altitude_press = alt.altitude();
+  pitch = mdf.getRollRadians();
+  yaw = mdf.getYawRadians();
+  roll = mdf.getPitchRadians();
+  front_acc = ay*-1.0;
+  right_acc = ax*-1.0;
+  up_acc = az*-1.0;
+}
 
 /*
   PWM_CH  基板の表示   サーボ
@@ -101,7 +109,7 @@ uint8_t CH5_State = 0;
 bool is_CH5_reset = true;
 
 //サーボ制御
-void controlServos(){
+void IRAM_ATTR controlServos(){
   //投下機構
   if(sbus_data[CH5] > 1024){
     if(is_CH5_reset){
@@ -127,7 +135,7 @@ void controlServos(){
 }
 
 //SBUS取得
-void readSBUS(){
+void IRAM_ATTR readSBUS(){
   if(sbus_rx.Read()){
     sbus_data = sbus_rx.ch();
   }
@@ -137,18 +145,20 @@ void readSBUS(){
   機体情報をUDPで放送
   
   起動からの経過時間[ms]
-  ピッチ[°] ヨー[°] ロール[°]
+  ピッチ[rad] ヨー[rad] ロール[rad]
   エレベーター[SBUS] スロットル[SBUS] ラダー[SBUS]
   前方加速度[G] 右方加速度[G] 上方加速度[G]
+  対地高度[mm] 気圧高度[m]
 
 */
-void sendUDP(){
+void IRAM_ATTR sendUDP(){
     char str[128];
-    sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f",
+    sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f",
       esp_timer_get_time()/1000,
       pitch,yaw,roll,
       Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
-      front_acc,right_acc,up_acc
+      front_acc,right_acc,up_acc,
+      distance_Tof,altitude_press
     );
     udp.broadcastTo(str,8901);
     delay(1);
@@ -162,7 +172,7 @@ float before_roll;
 float roll_kp=10.0,roll_kd=8.0;
 float target_roll = 50.0;
 
-void PDcontrol(){
+void IRAM_ATTR PDcontrol(){
   //CH6で自動操縦切り替え
   if(sbus_data[CH6] > 1024) return;
 
@@ -187,10 +197,11 @@ void control(void *pvParam){
 
 //センサ処理
 const int _sensorfreq_Hz = 1000;
-void fetchSensors(void *pvParam){
+const int _sensorcycle_us = 1000000 / _sensorfreq_Hz;
+void fetchIMU(void *pvParam){
   while(1){
     xSemaphoreTake(sp_sensor,portMAX_DELAY);
-    getAttitude();
+    getPosture();
   }
 }
 
@@ -198,6 +209,7 @@ void fetchSensors(void *pvParam){
 void commViaWiFi(void *pvParam){
   while (1){
     xSemaphoreTake(sp_wifi,portMAX_DELAY);
+    readSensor();
     sendUDP();
   }
 }
@@ -248,7 +260,7 @@ void setup() {
     //while(1);
   }
 
-  /*
+  //ToFセンサ
   Wire.begin();
   Wire.setClock(400 * 1000);
   dist.setTimeout(1000);
@@ -256,7 +268,6 @@ void setup() {
   dist.setDistanceMode(VL53L1X::Long);
   dist.setMeasurementTimingBudget(50000);
   dist.startContinuous(50);
-  */
 
   //LED設定
   pinMode(AUTOLED,OUTPUT);
@@ -277,7 +288,7 @@ void setup() {
 
   //タスク追加
   xTaskCreateUniversal(control,"control",8192,NULL,1,NULL,APP_CPU_NUM);
-  xTaskCreateUniversal(fetchSensors,"sensor",8192,NULL,configMAX_PRIORITIES,NULL,APP_CPU_NUM);
+  xTaskCreateUniversal(fetchIMU,"IMU",8192,NULL,configMAX_PRIORITIES,NULL,APP_CPU_NUM);
   xTaskCreateUniversal(commViaWiFi,"wifi",8192,NULL,1,NULL,PRO_CPU_NUM);
 
   //タイマー設定
@@ -292,7 +303,7 @@ void setup() {
 
   //割り込み設定
   timerAlarmWrite(tm_control,_controlcycle_us,true);
-  timerAlarmWrite(tm_sensor,_sensorfreq_Hz,true);
+  timerAlarmWrite(tm_sensor,_sensorcycle_us,true);
   timerAlarmWrite(tm_wifi,BROADCAST_FREQ_HZ,true);
 
   //タイマー起動
