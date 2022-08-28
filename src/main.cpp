@@ -13,6 +13,7 @@
 
 #define AUTOLED 4
 #define WIFI_TIMEOUTMS 5000
+#define LPF_GAIN 0.001
 
 //セマフォとかタイマーとか
 volatile SemaphoreHandle_t sp_control;
@@ -39,9 +40,17 @@ const uint8_t _ALT_CS = 15;
 icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
+float x,y,z;
+float lx,ly,lz;
+float ox=0,oy=0,oz=0;
 Madgwick mdf;
 void getAttitude(){
-  mdf.updateIMU(imu.gyroX()*-1.0,imu.gyroY(),imu.gyroZ(),imu.accelX(),imu.accelY(),imu.accelZ()*-1.0);
+  x = imu.gyroX()-ox,y = imu.gyroY()-oy,z=imu.gyroZ()-oz;
+  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * x;
+  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * y;
+  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * z;
+
+  mdf.updateIMU(lx*-1.0,ly,lz*-1.0,imu.accelX()*-1.0,imu.accelY(),imu.accelZ()*-1.0);
   pitch = mdf.getRoll();
   yaw = mdf.getYaw();
   roll = mdf.getPitch();
@@ -103,7 +112,7 @@ void controlServos(){
 void readSBUS(){
   if(sbus_rx.Read()){
     sbus_data = sbus_rx.ch();
-    for(uint8_t i = 0;i<4;i++){
+    for(uint8_t i = 0;i<5;i++){
       DutyRatio[i] = sbus_data[i];
     }
   }
@@ -112,7 +121,7 @@ void readSBUS(){
 //機体情報をUDPで放送
 void sendUDP(){
     char str[128];
-    sprintf(str,"%ldms,%.3f,%.3f,%.3f,%d,%d,%d,%.3f\r\n",
+    sprintf(str,"%ldms,%.3f,%.3f,%.3f,%d,%d,%d,%.3f",
       esp_timer_get_time()/1000,
       pitch,yaw,roll,
       sbus_data[1],sbus_data[2],sbus_data[3],
@@ -122,11 +131,32 @@ void sendUDP(){
     delay(1);
 }
 
+//PID制御
+float before_pitch,I_pitch;
+float pitch_kp=10.0,pitch_ki=0.0,pitch_kd=8.0;
+float target_pitch = 15.0;
+float before_roll,I_roll;
+float roll_kp=10.0,roll_ki=0.0,roll_kd=8.0;
+float target_roll = 50.0;
+void PID(){
+  if(sbus_data[5] > 1024) return;
+  float diff_pitch = target_pitch - pitch;
+  DutyRatio[1] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
+  I_pitch += diff_pitch;
+  before_pitch = pitch;
+
+  float diff_roll = target_roll - roll;
+  DutyRatio[3] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
+  I_roll += diff_roll;
+  before_roll = roll;
+}
+
 //制御系（100Hz）
 void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
     readSBUS();
+    PID();
     controlServos();
   }
 }
@@ -173,13 +203,24 @@ void setup() {
   if(imu.init(new SPIClass(VSPI),1000000,_IMU_CS) == -1){
     Serial.printf("IMU init failed.\r\n");
     while(1);
-    }
+  }
+
+  vTaskDelay(3000/portTICK_RATE_MS);
+  for(int i=0;i<1000;i++){
+    ox+=imu.gyroX();
+    oy+=imu.gyroY();
+    oz+=imu.gyroZ();
+    vTaskDelay(1/portTICK_RATE_MS);
+  }
+  ox/=1000.0,oy/=1000.0,oz/=1000.0;
+
   /*
   if(alt.init(new SPIClass(HSPI),1000000,_ALT_CS) == -1){
     Serial.printf("ALT init failed.\r\n");
     while(1);
     }
-    */
+  */
+
   /*
   Wire.begin();
   Wire.setClock(400 * 1000);
