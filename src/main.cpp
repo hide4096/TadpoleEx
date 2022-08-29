@@ -14,8 +14,9 @@
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
-#define LPF_GAIN 0.001
+#define LPF_GAIN 0.5
 #define BROADCAST_FREQ_HZ 100
+#define DEG2RAD M_PI/180.0
 
 #define AIL 0
 #define ELE 1
@@ -23,6 +24,8 @@
 #define RUD 3
 #define CH5 4
 #define CH6 5
+#define CH7 6
+#define VR  7
 
 
 //セマフォとかタイマーとか
@@ -47,20 +50,21 @@ icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
 float front_acc,right_acc,up_acc;
+float pitch_gyr,yaw_gyr,roll_gyr;
 float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
 Madgwick mdf;
 
 void IRAM_ATTR getPosture(){
-  float gx = imu.gyroX()-ox,gy = imu.gyroY()-oy,gz=imu.gyroZ()-oz;
+  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
   lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
   ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
   lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
 
   ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
 
-  mdf.updateIMU(lx*-1.0,ly,lz*-1.0,ax,ay,az);
+  mdf.updateIMU(lx,ly,lz,ax,ay,az);
 }
 
 //ToFセンサ
@@ -69,17 +73,22 @@ VL53L1X dist;
 lps25hb alt;
 const uint8_t _ALT_CS = 15;
 float distance_Tof = -1.0;
+float before_yaw;
 float altitude_press;
 
 void IRAM_ATTR readSensor(){
   distance_Tof = dist.read();
-  altitude_press = alt.altitude();
+  //altitude_press = alt.altitude();
   pitch = mdf.getRollRadians();
+  before_yaw = yaw;
   yaw = mdf.getYawRadians();
   roll = mdf.getPitchRadians();
   front_acc = ay*-1.0;
   right_acc = ax*-1.0;
   up_acc = az*-1.0;
+  pitch_gyr = lx;
+  yaw_gyr = lz;
+  roll_gyr = ly;
 }
 
 /*
@@ -151,37 +160,46 @@ void IRAM_ATTR readSBUS(){
   対地高度[mm] 気圧高度[m]
 
 */
+
 void IRAM_ATTR sendUDP(){
     char str[128];
-    sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f",
-      esp_timer_get_time()/1000,
-      pitch,yaw,roll,
-      Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
-      front_acc,right_acc,up_acc,
-      distance_Tof,altitude_press
-    );
+    if(sbus_data[CH7] > 1024){
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
+        esp_timer_get_time()/1000,
+        pitch,yaw,roll,
+        Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
+        front_acc,right_acc,up_acc,
+        pitch_gyr,yaw_gyr,roll_gyr,
+        distance_Tof,(yaw - before_yaw)*10.0
+      );
+    }else{
+      sprintf(str,"Soiya");
+    }
     udp.broadcastTo(str,8901);
-    delay(1);
 }
 
 //PD制御
 float before_pitch;
-float pitch_kp=10.0,pitch_kd=8.0;
-float target_pitch = 15.0;
+float pitch_kp=1000.0,pitch_kd=100.0;
+float target_pitch = 15.0*DEG2RAD;
 float before_roll;
-float roll_kp=10.0,roll_kd=8.0;
-float target_roll = 50.0;
+float roll_kp=1000.0,roll_kd=100.0;
+float target_roll = 70.0*DEG2RAD;
 
 void IRAM_ATTR PDcontrol(){
+  for(int i = 0;i<5;i++){
+    Output_SBUS[i] = sbus_data[i];
+  }
   //CH6で自動操縦切り替え
   if(sbus_data[CH6] > 1024) return;
 
+
   float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] = sbus_data[ELE] - diff_pitch * pitch_kp + (before_pitch - pitch) * pitch_kd;
+  Output_SBUS[ELE] -= diff_pitch * pitch_kp + (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
 
-  float diff_roll = target_roll - roll;
-  Output_SBUS[RUD] = sbus_data[RUD] - diff_roll * roll_kp + (before_roll - roll) * roll_kd;
+  float diff_roll = target_roll - (before_yaw - yaw)*10.0;
+  Output_SBUS[RUD] -= diff_roll * roll_kp + (before_roll - roll) * roll_kd;
   before_roll = roll;
 }
 
