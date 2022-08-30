@@ -14,7 +14,7 @@
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
-#define LPF_GAIN 0.5
+#define LPF_GAIN 0.01
 #define BROADCAST_FREQ_HZ 100
 #define DEG2RAD M_PI/180.0
 
@@ -49,23 +49,13 @@ std::array<int16_t,bfs::SbusRx::NUM_CH()> sbus_data;
 icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
-float front_acc,right_acc,up_acc;
+float x_acc,y_acc,z_acc;
 float pitch_gyr,yaw_gyr,roll_gyr;
 float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
+float up_speed = 0;
 Madgwick mdf;
-
-void IRAM_ATTR getPosture(){
-  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
-  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
-  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
-  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
-
-  ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
-
-  mdf.updateIMU(lx,ly,lz,ax,ay,az);
-}
 
 //ToFセンサ
 VL53L1X dist;
@@ -76,19 +66,49 @@ float distance_Tof = -1.0;
 float before_yaw;
 float altitude_press;
 
+//クォータニオン
+float q0q0,q1q1,q2q2,q3q3;
+float q0q1,q0q2,q0q3;
+float q1q2,q1q3;
+float q2q3;
+
 void IRAM_ATTR readSensor(){
-  distance_Tof = dist.read();
-  //altitude_press = alt.altitude();
+  altitude_press = alt.altitude();
   pitch = mdf.getRollRadians();
   before_yaw = yaw;
   yaw = mdf.getYawRadians();
   roll = mdf.getPitchRadians();
-  front_acc = ay*-1.0;
-  right_acc = ax*-1.0;
-  up_acc = az*-1.0;
   pitch_gyr = lx;
   yaw_gyr = lz;
   roll_gyr = ly;
+
+  distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
+}
+
+void IRAM_ATTR getPosture(){
+  //ジャイロにオフセットとローパスフィルタ
+  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
+  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
+  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
+  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
+  //加速度
+  ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
+  //姿勢計算
+  mdf.updateIMU(lx,ly,lz,ax,ay,az);
+
+  //絶対座標系に変換
+  float* q;
+  mdf.getQuaternion(q);
+  q0q0 = q[0]*q[0],q1q1 = q[1]*q[1],q2q2 = q[2]*q[2],q3q3 = q[3]*q[3];
+  q0q1 = q[0]*q[1],q0q2 = q[0]*q[2],q0q3 = q[0]*q[3];
+  q1q2 = q[1]*q[2],q1q3 = q[1]*q[3];
+  q2q3 = q[2]*q[3];
+
+  x_acc = (q0q0 + q1q1 - q2q2 - q3q3)*ax + 2*(q1q2 - q0q3)*ay + 2*(q1q3 + q0q2)*az;
+  y_acc = 2*(q1q2 + q0q3)*ax + (q0q0 - q1q1 + q2q2 - q3q3)*ay + 2*(q2q3 - q0q1)*az;
+  z_acc = 2*(q1q3 - q0q2)*ax + 2*(q2q3 + q0q1)*ay + (q0q0 - q1q1 - q2q2 + q3q3)*az;
+
+  up_speed += (z_acc - 1.0) / 1000; 
 }
 
 /*
@@ -157,6 +177,7 @@ void IRAM_ATTR readSBUS(){
   ピッチ[rad] ヨー[rad] ロール[rad]
   エレベーター[SBUS] スロットル[SBUS] ラダー[SBUS]
   前方加速度[G] 右方加速度[G] 上方加速度[G]
+  上昇速度[m/s]
   対地高度[mm] 気圧高度[m]
 
 */
@@ -164,12 +185,12 @@ void IRAM_ATTR readSBUS(){
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
-      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
-        front_acc,right_acc,up_acc,
-        pitch_gyr,yaw_gyr,roll_gyr,
+        x_acc,y_acc,z_acc,
+        up_speed,
         distance_Tof,(yaw - before_yaw)*10.0
       );
     }else{
@@ -180,11 +201,11 @@ void IRAM_ATTR sendUDP(){
 
 //PD制御
 float before_pitch;
-float pitch_kp=1000.0,pitch_kd=100.0;
-float target_pitch = 15.0*DEG2RAD;
+float pitch_kp=1000.0,pitch_kd=0.0;
+float target_pitch = 20.0*DEG2RAD;
 float before_roll;
-float roll_kp=1000.0,roll_kd=100.0;
-float target_roll = 70.0*DEG2RAD;
+float roll_kp=800.0,roll_kd=200.0;
+float target_roll = 60.0*DEG2RAD;
 
 void IRAM_ATTR PDcontrol(){
   for(int i = 0;i<5;i++){
@@ -229,6 +250,7 @@ void commViaWiFi(void *pvParam){
     xSemaphoreTake(sp_wifi,portMAX_DELAY);
     readSensor();
     sendUDP();
+    delay(1);
   }
 }
 
@@ -269,7 +291,7 @@ void setup() {
     ox+=imu.gyroX();
     oy+=imu.gyroY();
     oz+=imu.gyroZ();
-    vTaskDelay(1/portTICK_RATE_MS);
+    //vTaskDelay(1/portTICK_RATE_MS);
   }
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
 

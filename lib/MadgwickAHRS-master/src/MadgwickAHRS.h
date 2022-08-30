@@ -69,6 +69,14 @@ public:
         if (!anglesComputed) computeAngles();
         return yaw;
     }
+
+    //クォータニオン吐かせる
+    void getQuaternion(float* q) {
+        q[0] = q0;
+        q[1] = q1;
+        q[2] = q2;
+        q[3] = q3;
+    }
 };
 #endif
 
