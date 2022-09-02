@@ -1,0 +1,5 @@
+(fp_lib_table
+  (lib (name "footprints")(type "KiCad")(uri "C:/Users/neko2/OneDrive/reRo/Part/footprints.pretty")(options "")(descr ""))
+  (lib (name "My")(type "KiCad")(uri "C:/Users/neko2/OneDrive/reRo/Part/HandMade/My.pretty")(options "")(descr ""))
+  (lib (name "ZX62R-B-5P_30_")(type "KiCad")(uri "C:/Users/neko2/OneDrive/reRo/Part/ZX62R-B-5P_30_")(options "")(descr ""))
+)

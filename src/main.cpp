@@ -17,6 +17,7 @@
 #define LPF_GAIN 0.01
 #define BROADCAST_FREQ_HZ 100
 #define DEG2RAD M_PI/180.0
+#define I_MAX 10000.0
 
 #define AIL 0
 #define ELE 1
@@ -54,7 +55,7 @@ float pitch_gyr,yaw_gyr,roll_gyr;
 float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
-float up_speed = 0;
+float z_gravity = 0;
 Madgwick mdf;
 
 //ToFセンサ
@@ -107,8 +108,6 @@ void IRAM_ATTR getPosture(){
   x_acc = (q0q0 + q1q1 - q2q2 - q3q3)*ax + 2*(q1q2 - q0q3)*ay + 2*(q1q3 + q0q2)*az;
   y_acc = 2*(q1q2 + q0q3)*ax + (q0q0 - q1q1 + q2q2 - q3q3)*ay + 2*(q2q3 - q0q1)*az;
   z_acc = 2*(q1q3 - q0q2)*ax + 2*(q2q3 + q0q1)*ay + (q0q0 - q1q1 - q2q2 + q3q3)*az;
-
-  up_speed += (z_acc - 1.0) / 1000; 
 }
 
 /*
@@ -177,21 +176,19 @@ void IRAM_ATTR readSBUS(){
   ピッチ[rad] ヨー[rad] ロール[rad]
   エレベーター[SBUS] スロットル[SBUS] ラダー[SBUS]
   前方加速度[G] 右方加速度[G] 上方加速度[G]
-  上昇速度[m/s]
-  対地高度[mm] 気圧高度[m]
+  対地高度[mm]
 
 */
 
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
-      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f",
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f",
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
         x_acc,y_acc,z_acc,
-        up_speed,
-        distance_Tof,(yaw - before_yaw)*10.0
+        distance_Tof
       );
     }else{
       sprintf(str,"Soiya");
@@ -199,29 +196,59 @@ void IRAM_ATTR sendUDP(){
     udp.broadcastTo(str,8901);
 }
 
-//PD制御
+//PID制御
 float before_pitch;
-float pitch_kp=1000.0,pitch_kd=0.0;
-float target_pitch = 20.0*DEG2RAD;
-float before_roll;
-float roll_kp=800.0,roll_kd=200.0;
-float target_roll = 60.0*DEG2RAD;
+float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=10.0;
+float I_pitch = 0.0;
+float target_pitch = 5*DEG2RAD;
 
-void IRAM_ATTR PDcontrol(){
+float before_roll;
+float roll_kp=800.0,roll_ki = 0.0,roll_kd=10.0;
+float I_roll = 0.0;
+float target_roll = 30.0*DEG2RAD;
+
+float before_altitude;
+float alt_kp=300.0,alt_ki = 100.0,alt_kd=0.0;
+float I_altitude = 0.0;
+float target_altitude = 2000;
+
+bool is_first_run = false;
+
+void IRAM_ATTR PIDcontrol(){
   for(int i = 0;i<5;i++){
     Output_SBUS[i] = sbus_data[i];
   }
   //CH6で自動操縦切り替え
-  if(sbus_data[CH6] > 1024) return;
+  if(sbus_data[CH6] > 1024){
+    is_first_run = true;
+    I_pitch = 0.0;
+    I_roll = 0.0;
+    return;
+  }
 
+  if(is_first_run) z_acc;
 
   float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] -= diff_pitch * pitch_kp + (before_pitch - pitch) * pitch_kd;
+  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
+  I_pitch += diff_pitch;
+  if(I_pitch > I_MAX ) I_pitch = I_MAX;
+  else if(I_pitch < -I_MAX) I_pitch = -I_MAX;
 
-  float diff_roll = target_roll - (before_yaw - yaw)*10.0;
-  Output_SBUS[RUD] -= diff_roll * roll_kp + (before_roll - roll) * roll_kd;
+  float diff_roll = target_roll - roll;
+  Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
   before_roll = roll;
+  I_roll += diff_roll;
+  if(I_roll > I_MAX ) I_roll = I_MAX;
+  else if(I_roll < -I_MAX) I_roll = -I_MAX;
+  /*
+  float diff_altitude = target_altitude - distance_Tof;
+  Output_SBUS[THR] += diff_altitude * alt_kp + I_altitude * alt_ki + (before_altitude - distance_Tof) * alt_kd;
+  before_roll = diff_altitude;
+  I_altitude += diff_altitude;
+  if(I_altitude > I_MAX ) I_altitude = I_MAX;
+  else if(I_altitude < -I_MAX) I_altitude = -I_MAX;
+  */
 }
 
 //制御系（サーボのPWM周波数に合わせて50Hz）
@@ -229,7 +256,7 @@ void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
     readSBUS();
-    PDcontrol();
+    PIDcontrol();
     controlServos();
   }
 }
@@ -351,6 +378,7 @@ void setup() {
   timerAlarmEnable(tm_sensor);
   timerAlarmEnable(tm_wifi);
 
+  vTaskDelay(3000/portTICK_RATE_MS);
   Serial.printf("setup finished.\r\n");
   }
 

@@ -1,0 +1,4 @@
+(sym_lib_table
+  (lib (name "NJM2844")(type "KiCad")(uri "C:/Users/neko2/OneDrive/reRo/Part/HandMade/NJM2844.kicad_sym")(options "")(descr ""))
+  (lib (name "CH340K")(type "KiCad")(uri "C:/Users/neko2/OneDrive/reRo/Part/HandMade/CH340K.kicad_sym")(options "")(descr ""))
+)
