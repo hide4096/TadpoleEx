@@ -176,7 +176,7 @@ float before_roll,I_roll,target_roll;
 float roll_kp=1200.0,roll_ki = 10.0,roll_kd=500.0;
 
 float before_alt;
-float alt_kp=0.5,alt_ki = 0.1,alt_kd=0.0;
+float alt_kp=0.1,alt_ki = 0.1,alt_kd=0.2;
 float I_alt;
 float target_alt;
 
@@ -195,14 +195,13 @@ void IRAM_ATTR PIDcontrol(){
   if(I_roll > I_MAX ) I_roll = I_MAX;
   else if(I_roll < -I_MAX) I_roll = -I_MAX;
   
-  /*
-  float diff_climb = target_alt - altitude;
-  Output_SBUS[THR] += diff_climb * alt_kp + I_alt * alt_ki + (before_alt - climb_speed) * alt_kd;
-  before_roll = diff_climb;
-  I_alt += diff_climb;
+  float diff_alt = target_alt - altitude;
+  Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki + (before_alt - altitude) * alt_kd;
+  before_alt = diff_alt;
+  I_alt += diff_alt;
   if(I_alt > I_MAX ) I_alt = I_MAX;
   else if(I_alt < -I_MAX) I_alt = -I_MAX;
-  */
+  
 }
 
 bool is_first_run = true;
@@ -230,15 +229,15 @@ void Modecontrol(){
   if(sbus_data[CH8] > 1536){
     target_roll = 35 * DEG2RAD;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 2000.0;
+    target_alt = 1000.0;
   }else if(sbus_data[CH8] < 512){
     target_roll = -35*DEG2RAD;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 2000.0;
+    target_alt = 1000.0;
   }else{
     target_roll = 0.0;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 2000.0;
+    target_alt = 1000.0;
   }
   
   PIDcontrol();
@@ -340,13 +339,6 @@ void setup() {
     //vTaskDelay(1/portTICK_RATE_MS);
   }
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
-
-  /*
-  if(alt.init(new SPIClass(HSPI),1000*1000,_ALT_CS) == -1){
-    Serial.printf("ALT init failed.\r\n");
-    //while(1);
-  }
-  */
 
   //ToFセンサ
   Wire.begin();
