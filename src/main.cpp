@@ -17,7 +17,7 @@
 #define LPF_GAIN_ALT 0.5
 #define BROADCAST_FREQ_HZ 50
 #define DEG2RAD M_PI/180.0
-#define I_MAX 10000.0
+#define I_MAX 1000.0
 #define ROLL_MAX (50 * DEG2RAD)
 
 
@@ -173,7 +173,7 @@ float before_pitch,I_pitch,target_pitch;
 float pitch_kp=1400.0,pitch_ki = 0.0,pitch_kd=000.0;
 
 float before_roll,I_roll,target_roll;
-float roll_kp=1200.0,roll_ki = 0.0,roll_kd=500.0;
+float roll_kp=1200.0,roll_ki = 10.0,roll_kd=500.0;
 
 float before_alt;
 float alt_kp=0.5,alt_ki = 0.1,alt_kd=0.0;
