@@ -6,7 +6,6 @@
 #include <AsyncUDP.h>
 #include <math.h>
 #include "icm20648.h"
-#include "lps25hb.h"
 #include "VL53L1X.h"
 #include "esp32-hal-ledc.h"
 #include "sbus.h"
@@ -14,10 +13,13 @@
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
-#define LPF_GAIN 0.01
-#define BROADCAST_FREQ_HZ 100
+#define LPF_GAIN 0.1
+#define LPF_GAIN_ALT 0.5
+#define BROADCAST_FREQ_HZ 50
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000.0
+#define ROLL_MAX (50 * DEG2RAD)
+
 
 #define AIL 0
 #define ELE 1
@@ -26,8 +28,10 @@
 #define CH5 4
 #define CH6 5
 #define CH7 6
-#define VR  7
+#define CH8 7
 
+const int _servofreq_Hz = 50;
+const int _controlcycle_us = 1000000 / _servofreq_Hz;
 
 //セマフォとかタイマーとか
 volatile SemaphoreHandle_t sp_control;
@@ -55,17 +59,13 @@ float pitch_gyr,yaw_gyr,roll_gyr;
 float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
-float z_gravity = 0;
 Madgwick mdf;
 
 //ToFセンサ
 VL53L1X dist;
-//大気圧センサ
-lps25hb alt;
-const uint8_t _ALT_CS = 15;
-float distance_Tof = -1.0;
-float before_yaw;
-float altitude_press;
+float distance_Tof = 0.0;
+float altitude = 0.0;
+float climb_speed = 0.0;
 
 //クォータニオン
 float q0q0,q1q1,q2q2,q3q3;
@@ -74,9 +74,7 @@ float q1q2,q1q3;
 float q2q3;
 
 void IRAM_ATTR readSensor(){
-  altitude_press = alt.altitude();
   pitch = mdf.getRollRadians();
-  before_yaw = yaw;
   yaw = mdf.getYawRadians();
   roll = mdf.getPitchRadians();
   pitch_gyr = lx;
@@ -84,6 +82,7 @@ void IRAM_ATTR readSensor(){
   roll_gyr = ly;
 
   distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
+  altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
 }
 
 void IRAM_ATTR getPosture(){
@@ -169,6 +168,84 @@ void IRAM_ATTR readSBUS(){
   }
 }
 
+//PID制御
+float before_pitch,I_pitch,target_pitch;
+float pitch_kp=1400.0,pitch_ki = 0.0,pitch_kd=000.0;
+
+float before_roll,I_roll,target_roll;
+float roll_kp=1200.0,roll_ki = 0.0,roll_kd=500.0;
+
+float before_alt;
+float alt_kp=0.5,alt_ki = 0.1,alt_kd=0.0;
+float I_alt;
+float target_alt;
+
+void IRAM_ATTR PIDcontrol(){
+  float diff_pitch = target_pitch - pitch;
+  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
+  before_pitch = pitch;
+  I_pitch += diff_pitch;
+  if(I_pitch > I_MAX ) I_pitch = I_MAX;
+  else if(I_pitch < -I_MAX) I_pitch = -I_MAX;
+
+  float diff_roll = target_roll - roll;
+  Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
+  before_roll = roll;
+  I_roll += diff_roll;
+  if(I_roll > I_MAX ) I_roll = I_MAX;
+  else if(I_roll < -I_MAX) I_roll = -I_MAX;
+  
+  /*
+  float diff_climb = target_alt - altitude;
+  Output_SBUS[THR] += diff_climb * alt_kp + I_alt * alt_ki + (before_alt - climb_speed) * alt_kd;
+  before_roll = diff_climb;
+  I_alt += diff_climb;
+  if(I_alt > I_MAX ) I_alt = I_MAX;
+  else if(I_alt < -I_MAX) I_alt = -I_MAX;
+  */
+}
+
+bool is_first_run = true;
+
+void Modecontrol(){
+  for(int i = 0;i<5;i++){
+    Output_SBUS[i] = sbus_data[i];
+  }
+  //CH6で自動操縦切り替え
+  if(sbus_data[CH6] > 1024){
+    is_first_run = true;
+    return;
+  }
+
+  if(is_first_run){
+    I_pitch = 0.0;
+    I_roll = 0.0;
+    I_alt = 0.0;
+    before_alt = 0.0;
+    before_pitch = 0.0;
+    before_roll = 0.0;
+    is_first_run = false;
+  }
+
+  if(sbus_data[CH8] > 1536){
+    target_roll = 35 * DEG2RAD;
+    target_pitch = 20.0 * DEG2RAD;
+    target_alt = 2000.0;
+  }else if(sbus_data[CH8] < 512){
+    target_roll = -35*DEG2RAD;
+    target_pitch = 20.0 * DEG2RAD;
+    target_alt = 2000.0;
+  }else{
+    target_roll = 0.0;
+    target_pitch = 20.0 * DEG2RAD;
+    target_alt = 2000.0;
+  }
+  
+  PIDcontrol();
+  
+  return;
+}
+
 /*
   機体情報をUDPで放送
   
@@ -183,12 +260,12 @@ void IRAM_ATTR readSBUS(){
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
-      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f",
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f",
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
         x_acc,y_acc,z_acc,
-        distance_Tof
+        altitude,target_roll
       );
     }else{
       sprintf(str,"Soiya");
@@ -196,67 +273,12 @@ void IRAM_ATTR sendUDP(){
     udp.broadcastTo(str,8901);
 }
 
-//PID制御
-float before_pitch;
-float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=10.0;
-float I_pitch = 0.0;
-float target_pitch = 5*DEG2RAD;
-
-float before_roll;
-float roll_kp=800.0,roll_ki = 0.0,roll_kd=10.0;
-float I_roll = 0.0;
-float target_roll = 30.0*DEG2RAD;
-
-float before_altitude;
-float alt_kp=300.0,alt_ki = 100.0,alt_kd=0.0;
-float I_altitude = 0.0;
-float target_altitude = 2000;
-
-bool is_first_run = false;
-
-void IRAM_ATTR PIDcontrol(){
-  for(int i = 0;i<5;i++){
-    Output_SBUS[i] = sbus_data[i];
-  }
-  //CH6で自動操縦切り替え
-  if(sbus_data[CH6] > 1024){
-    is_first_run = true;
-    I_pitch = 0.0;
-    I_roll = 0.0;
-    return;
-  }
-
-  if(is_first_run) z_acc;
-
-  float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
-  before_pitch = pitch;
-  I_pitch += diff_pitch;
-  if(I_pitch > I_MAX ) I_pitch = I_MAX;
-  else if(I_pitch < -I_MAX) I_pitch = -I_MAX;
-
-  float diff_roll = target_roll - roll;
-  Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
-  before_roll = roll;
-  I_roll += diff_roll;
-  if(I_roll > I_MAX ) I_roll = I_MAX;
-  else if(I_roll < -I_MAX) I_roll = -I_MAX;
-  /*
-  float diff_altitude = target_altitude - distance_Tof;
-  Output_SBUS[THR] += diff_altitude * alt_kp + I_altitude * alt_ki + (before_altitude - distance_Tof) * alt_kd;
-  before_roll = diff_altitude;
-  I_altitude += diff_altitude;
-  if(I_altitude > I_MAX ) I_altitude = I_MAX;
-  else if(I_altitude < -I_MAX) I_altitude = -I_MAX;
-  */
-}
-
 //制御系（サーボのPWM周波数に合わせて50Hz）
 void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
     readSBUS();
-    PIDcontrol();
+    Modecontrol();
     controlServos();
   }
 }
@@ -291,9 +313,6 @@ void IRAM_ATTR onTimer_wifi(){
   xSemaphoreGiveFromISR(sp_wifi,NULL);
 }
 
-const int _servofreq_Hz = 50;
-const int _controlcycle_us = 1000000 / _servofreq_Hz;
-
 void setup() {
   //シリアル通信開始
   Serial.begin(115200);
@@ -322,10 +341,12 @@ void setup() {
   }
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
 
+  /*
   if(alt.init(new SPIClass(HSPI),1000*1000,_ALT_CS) == -1){
     Serial.printf("ALT init failed.\r\n");
     //while(1);
   }
+  */
 
   //ToFセンサ
   Wire.begin();
