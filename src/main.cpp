@@ -14,12 +14,10 @@
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
 #define LPF_GAIN 0.1
-#define LPF_GAIN_ALT 0.5
+#define LPF_GAIN_ALT 0.8
 #define BROADCAST_FREQ_HZ 50
 #define DEG2RAD M_PI/180.0
 #define I_MAX 1000.0
-#define ROLL_MAX (50 * DEG2RAD)
-
 
 #define AIL 0
 #define ELE 1
@@ -173,34 +171,36 @@ float before_pitch,I_pitch,target_pitch;
 float pitch_kp=1400.0,pitch_ki = 0.0,pitch_kd=000.0;
 
 float before_roll,I_roll,target_roll;
-float roll_kp=1200.0,roll_ki = 10.0,roll_kd=500.0;
+float roll_kp=1000.0,roll_ki = 10.0,roll_kd=700.0;
 
 float before_alt;
-float alt_kp=0.1,alt_ki = 0.1,alt_kd=0.2;
+float alt_kp=0.2,alt_ki = 0.0, alt_kd=0.1;
 float I_alt;
 float target_alt;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki + (before_pitch - pitch) * pitch_kd;
+  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki - (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
   I_pitch += diff_pitch;
   if(I_pitch > I_MAX ) I_pitch = I_MAX;
   else if(I_pitch < -I_MAX) I_pitch = -I_MAX;
 
   float diff_roll = target_roll - roll;
-  Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki + (before_roll - roll) * roll_kd;
+  Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki - (before_roll - roll) * roll_kd;
   before_roll = roll;
   I_roll += diff_roll;
   if(I_roll > I_MAX ) I_roll = I_MAX;
   else if(I_roll < -I_MAX) I_roll = -I_MAX;
   
-  float diff_alt = target_alt - altitude;
-  Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki + (before_alt - altitude) * alt_kd;
-  before_alt = diff_alt;
-  I_alt += diff_alt;
-  if(I_alt > I_MAX ) I_alt = I_MAX;
-  else if(I_alt < -I_MAX) I_alt = -I_MAX;
+  if(target_alt > 0){
+    float diff_alt = target_alt - altitude;
+    Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
+    before_alt = diff_alt;
+    I_alt += diff_alt;
+    if(I_alt > I_MAX ) I_alt = I_MAX;
+    else if(I_alt < -I_MAX) I_alt = -I_MAX;
+  }
   
 }
 
@@ -229,11 +229,11 @@ void Modecontrol(){
   if(sbus_data[CH8] > 1536){
     target_roll = 35 * DEG2RAD;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 1000.0;
+    target_alt = 2500.0;
   }else if(sbus_data[CH8] < 512){
     target_roll = -35*DEG2RAD;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 1000.0;
+    target_alt = 2500.0;
   }else{
     target_roll = 0.0;
     target_pitch = 20.0 * DEG2RAD;
