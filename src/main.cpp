@@ -10,6 +10,7 @@
 #include "esp32-hal-ledc.h"
 #include "sbus.h"
 #include "MadgwickAHRS.h"
+#include <WiFiScan.h>
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
@@ -18,7 +19,7 @@
 #define BROADCAST_FREQ_HZ 50
 #define DEG2RAD M_PI/180.0
 #define I_MAX 1000.0
-
+  
 #define AIL 0
 #define ELE 1
 #define THR 2
@@ -168,13 +169,13 @@ void IRAM_ATTR readSBUS(){
 
 //PID制御
 float before_pitch,I_pitch,target_pitch;
-float pitch_kp=1400.0,pitch_ki = 0.0,pitch_kd=000.0;
+float pitch_kp=600.0,pitch_ki = 0.0,pitch_kd=1000.0;
 
 float before_roll,I_roll,target_roll;
-float roll_kp=1000.0,roll_ki = 10.0,roll_kd=700.0;
+float roll_kp=1200.0,roll_ki = 0.0,roll_kd=300.0;
 
 float before_alt;
-float alt_kp=0.2,alt_ki = 0.0, alt_kd=0.1;
+float alt_kp=2.0,alt_ki = 0.0, alt_kd=0.5;
 float I_alt;
 float target_alt;
 
@@ -195,7 +196,7 @@ void IRAM_ATTR PIDcontrol(){
   
   if(target_alt > 0){
     float diff_alt = target_alt - altitude;
-    Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
+    Output_SBUS[THR] = diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
     before_alt = diff_alt;
     I_alt += diff_alt;
     if(I_alt > I_MAX ) I_alt = I_MAX;
@@ -235,9 +236,9 @@ void Modecontrol(){
     target_pitch = 20.0 * DEG2RAD;
     target_alt = 2500.0;
   }else{
-    target_roll = 0.0;
+    target_roll = ((sbus_data[AIL] / 1024) - 1.0) * 30.0 * DEG2RAD;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 1000.0;
+    target_alt = -1.0;
   }
   
   PIDcontrol();
