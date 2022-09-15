@@ -16,9 +16,18 @@
 #define WIFI_TIMEOUT_MS 5000
 #define LPF_GAIN 0.1
 #define LPF_GAIN_ALT 0.8
-#define BROADCAST_FREQ_HZ 50
+#define LPF_GAIN_RSSI 0.2
 #define DEG2RAD M_PI/180.0
-#define I_MAX 1000.0
+#define I_MAX 10000
+
+#define CRUSE_ALT 500
+#define R_TXPOWER -55
+#define L_TXPOWER -55
+#define LAND_RSSI -35
+#define DROP_RSSI -50
+
+#define R_GAIN 20.0
+#define L_GAIN 20.0
   
 #define AIL 0
 #define ELE 1
@@ -30,15 +39,17 @@
 #define CH8 7
 
 const int _servofreq_Hz = 50;
+const int _beaconfreq_Hz = 25;
 const int _controlcycle_us = 1000000 / _servofreq_Hz;
+const int _rssicycle_us = 1000000 / _beaconfreq_Hz;
 
 //セマフォとかタイマーとか
 volatile SemaphoreHandle_t sp_control;
-volatile SemaphoreHandle_t sp_sensor;
-volatile SemaphoreHandle_t sp_wifi;
+volatile SemaphoreHandle_t sp_imu;
+volatile SemaphoreHandle_t sp_rssi;
 hw_timer_t* tm_control = NULL;
-hw_timer_t* tm_sensor = NULL;
-hw_timer_t* tm_wifi = NULL;
+hw_timer_t* tm_imu = NULL;
+hw_timer_t* tm_rssi = NULL;
 
 //デバッグ用WiFiAP
 const char *ssid = "TadpoleEx";
@@ -108,6 +119,25 @@ void IRAM_ATTR getPosture(){
   z_acc = 2*(q1q3 - q0q2)*ax + 2*(q2q3 + q0q1)*ay + (q0q0 - q1q1 - q2q2 + q3q3)*az;
 }
 
+//WiFi強度の取得
+float RW_R = 0,RW_L = 0;
+float RW_diff = 0.0;
+int DROP = 0,RW_R_raw = 0,RW_L_raw = 0;
+void GetRSSI(){
+  int num_ap= WiFi.scanNetworks(false,false,false,30,9);
+  for(int i = 0;i<num_ap;i++){
+    String ssid_fetch = WiFi.SSID(i);
+    if(ssid_fetch == "Runway_L") RW_L_raw = WiFi.RSSI(i);
+    else if(ssid_fetch == "Runway_R") RW_R_raw = WiFi.RSSI(i);
+    else if(ssid_fetch == "TadpoleEx") DROP = WiFi.RSSI(i);
+  }
+  if(RW_L_raw >= 0) RW_L_raw = -100.0;
+  RW_L = pow(10.0,(L_TXPOWER - RW_L_raw) / L_GAIN);
+  if(RW_R_raw >= 0) RW_R_raw = -100.0; 
+  RW_R = pow(10.0,(R_TXPOWER - RW_R_raw) / R_GAIN);
+  RW_diff = RW_diff * LPF_GAIN_RSSI + (RW_R - RW_L) * (1.0-LPF_GAIN_RSSI);
+}
+
 /*
   PWM_CH  基板の表示   サーボ
   0       CH1         AIL(未使用)
@@ -167,25 +197,74 @@ void IRAM_ATTR readSBUS(){
   }
 }
 
+/*
+  オートパイロット
+  0 → 無効
+  1 → 離陸
+  2 → 着陸進入
+  3 → 着陸
+*/
+uint8_t autopilot = 0;
+bool is_drop = false;
+uint16_t autothr = 0;
+
 //PID制御
 float before_pitch,I_pitch,target_pitch;
-float pitch_kp=600.0,pitch_ki = 0.0,pitch_kd=1000.0;
+float pitch_kp=1000.0,pitch_ki = 0.0,pitch_kd=2000.0;
 
 float before_roll,I_roll,target_roll;
-float roll_kp=1200.0,roll_ki = 0.0,roll_kd=300.0;
+float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1000.0;
 
-float before_alt;
-float alt_kp=2.0,alt_ki = 0.0, alt_kd=0.5;
-float I_alt;
-float target_alt;
+float before_alt,I_alt,target_alt;
+float alt_kp=1.0,alt_ki = 0.0, alt_kd=0.5;
+
+//方位（起動時の機首方向を0）指定で飛行
+float before_auto,I_auto,target_auto;
+float auto_kp=1.0,auto_ki = 0.0, auto_kd=0.0;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki - (before_pitch - pitch) * pitch_kd;
+  Output_SBUS[ELE] += diff_pitch * pitch_kp + I_pitch * pitch_ki - (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
   I_pitch += diff_pitch;
   if(I_pitch > I_MAX ) I_pitch = I_MAX;
   else if(I_pitch < -I_MAX) I_pitch = -I_MAX;
+  
+  switch(autopilot){
+    case 1:
+      Output_SBUS[THR] = 1800;
+      break;
+    case 2:
+      Output_SBUS[THR] = 650;
+      break;
+    case 3:
+      Output_SBUS[THR] = 0;
+      break;
+    default:
+      break;
+  }
+
+  if(target_alt > 0){
+    float diff_alt = target_alt - altitude;
+    Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
+    before_alt = diff_alt;
+    I_alt += diff_alt;
+    if(I_alt > I_MAX ) I_alt = I_MAX;
+    else if(I_alt < -I_MAX) I_alt = -I_MAX;
+  }
+
+  
+
+  if(autopilot == 2){
+    float diff_auto = yaw - target_auto;
+    target_roll = diff_auto * auto_kp + I_auto * auto_ki - (before_auto - diff_auto) * auto_kd;
+    before_auto = diff_auto;
+    I_auto += diff_auto;
+    if(I_auto > I_MAX ) I_auto = I_MAX;
+    else if(I_auto < -I_MAX) I_auto = -I_MAX;
+
+    if(is_drop) sbus_data[CH5] = 0;
+  }
 
   float diff_roll = target_roll - roll;
   Output_SBUS[RUD] -= diff_roll * roll_kp + I_roll * roll_ki - (before_roll - roll) * roll_kd;
@@ -193,27 +272,19 @@ void IRAM_ATTR PIDcontrol(){
   I_roll += diff_roll;
   if(I_roll > I_MAX ) I_roll = I_MAX;
   else if(I_roll < -I_MAX) I_roll = -I_MAX;
-  
-  if(target_alt > 0){
-    float diff_alt = target_alt - altitude;
-    Output_SBUS[THR] = diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
-    before_alt = diff_alt;
-    I_alt += diff_alt;
-    if(I_alt > I_MAX ) I_alt = I_MAX;
-    else if(I_alt < -I_MAX) I_alt = -I_MAX;
-  }
-  
 }
 
 bool is_first_run = true;
 
 void Modecontrol(){
-  for(int i = 0;i<5;i++){
+  for(int i = 0;i<4;i++){
     Output_SBUS[i] = sbus_data[i];
   }
   //CH6で自動操縦切り替え
   if(sbus_data[CH6] > 1024){
     is_first_run = true;
+    autopilot = false;
+    digitalWrite(AUTOLED,LOW);
     return;
   }
 
@@ -224,23 +295,47 @@ void Modecontrol(){
     before_alt = 0.0;
     before_pitch = 0.0;
     before_roll = 0.0;
-    is_first_run = false;
+    digitalWrite(AUTOLED,HIGH);
   }
 
   if(sbus_data[CH8] > 1536){
-    target_roll = 35 * DEG2RAD;
+    if(is_first_run) target_alt = -1.0;
+    target_roll = 0;
     target_pitch = 20.0 * DEG2RAD;
-    target_alt = 2500.0;
   }else if(sbus_data[CH8] < 512){
+    if(is_first_run) target_alt = -1.0;
     target_roll = -35*DEG2RAD;
-    target_pitch = 20.0 * DEG2RAD;
-    target_alt = 2500.0;
+    target_pitch = 15.0 * DEG2RAD;
   }else{
-    target_roll = ((sbus_data[AIL] / 1024) - 1.0) * 30.0 * DEG2RAD;
-    target_pitch = 20.0 * DEG2RAD;
-    target_alt = -1.0;
+    //自動操縦
+    if(is_first_run){
+      autopilot = 1;
+      target_pitch = 15.0 * DEG2RAD;
+      target_roll = 0.0;
+      target_alt = -1.0;
+      is_drop = false;
+    }
+    if(autopilot == 1){
+      I_pitch = 0.0;
+      I_roll = 0.0;
+    }
+    if(autopilot == 1 && altitude > 50.0){
+      target_pitch = 5.0 * DEG2RAD;
+      target_alt = CRUSE_ALT;
+      target_auto = 45.0 * DEG2RAD;
+      autopilot = 2;
+    }
+    if(autopilot == 2){
+      if((RW_L + RW_R < 1.0)) autopilot = 3;
+      if(DROP > DROP_RSSI) is_drop = true;
+    }
+    if(autopilot == 3){
+      target_roll = 0.0;
+      target_pitch = 0.0;
+      target_alt = -1.0;
+    }
   }
-  
+  if(is_first_run) is_first_run = false;
   PIDcontrol();
   
   return;
@@ -252,7 +347,7 @@ void Modecontrol(){
   起動からの経過時間[ms]
   ピッチ[rad] ヨー[rad] ロール[rad]
   エレベーター[SBUS] スロットル[SBUS] ラダー[SBUS]
-  前方加速度[G] 右方加速度[G] 上方加速度[G]
+  WiFi強度の差分,
   対地高度[mm]
 
 */
@@ -260,12 +355,12 @@ void Modecontrol(){
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
-      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f",
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%d,%d,%d",
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
-        x_acc,y_acc,z_acc,
-        altitude,target_roll
+        (RW_L+RW_R)/2.0,RW_diff,
+        altitude,autopilot,RW_L_raw,RW_R_raw
       );
     }else{
       sprintf(str,"Soiya");
@@ -277,7 +372,6 @@ void IRAM_ATTR sendUDP(){
 void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
-    readSBUS();
     Modecontrol();
     controlServos();
   }
@@ -288,17 +382,26 @@ const int _sensorfreq_Hz = 1000;
 const int _sensorcycle_us = 1000000 / _sensorfreq_Hz;
 void fetchIMU(void *pvParam){
   while(1){
-    xSemaphoreTake(sp_sensor,portMAX_DELAY);
+    xSemaphoreTake(sp_imu,portMAX_DELAY);
     getPosture();
   }
 }
 
-//WiFi通信(CPU0)
-void commViaWiFi(void *pvParam){
+//各種センサ取得
+void fetchInput(void *pvParam){
   while (1){
-    xSemaphoreTake(sp_wifi,portMAX_DELAY);
+    xSemaphoreTake(sp_control,portMAX_DELAY);
+    readSBUS();
     readSensor();
-    sendUDP();
+    delay(1);
+  }
+}
+
+//RSSI取得
+void fetchRSSI(void *pvParam){
+  while (1){
+    xSemaphoreTake(sp_rssi,portMAX_DELAY);
+    GetRSSI();
     delay(1);
   }
 }
@@ -306,12 +409,14 @@ void commViaWiFi(void *pvParam){
 void IRAM_ATTR onTimer_control(){
   xSemaphoreGiveFromISR(sp_control,NULL);
 }
-void IRAM_ATTR onTimer_sensor(){
-  xSemaphoreGiveFromISR(sp_sensor,NULL);
+void IRAM_ATTR onTimer_imu(){
+  xSemaphoreGiveFromISR(sp_imu,NULL);
 }
-void IRAM_ATTR onTimer_wifi(){
-  xSemaphoreGiveFromISR(sp_wifi,NULL);
+void IRAM_ATTR onTimer_rssi(){
+  xSemaphoreGiveFromISR(sp_rssi,NULL);
 }
+
+bool is_udp_enable = true;
 
 void setup() {
   //シリアル通信開始
@@ -346,7 +451,7 @@ void setup() {
   Wire.setClock(400 * 1000);
   dist.setTimeout(1000);
   dist.init();
-  dist.setDistanceMode(VL53L1X::Long);
+  dist.setDistanceMode(VL53L1X::Medium);
   dist.setMeasurementTimingBudget(50000);
   dist.startContinuous(50);
 
@@ -356,13 +461,8 @@ void setup() {
 
   //セマフォ生成
   sp_control = xSemaphoreCreateBinary();
-  sp_sensor = xSemaphoreCreateBinary();
-  sp_wifi = xSemaphoreCreateBinary();
-
-  //WiFi接続
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid,pass);
-  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED) Serial.println("fail");
+  sp_imu = xSemaphoreCreateBinary();
+  sp_rssi = xSemaphoreCreateBinary();
 
   //フィルタ起動
   mdf.begin(_sensorfreq_Hz);
@@ -370,33 +470,43 @@ void setup() {
   //タスク追加
   xTaskCreateUniversal(control,"control",8192,NULL,1,NULL,APP_CPU_NUM);
   xTaskCreateUniversal(fetchIMU,"IMU",8192,NULL,configMAX_PRIORITIES,NULL,APP_CPU_NUM);
-  xTaskCreateUniversal(commViaWiFi,"wifi",8192,NULL,1,NULL,PRO_CPU_NUM);
+  xTaskCreateUniversal(fetchInput,"Input",8192,NULL,1,NULL,PRO_CPU_NUM);
+  xTaskCreateUniversal(fetchRSSI,"RSSI",8192,NULL,1,NULL,PRO_CPU_NUM);
 
   //タイマー設定
   //タイマー1が死んでるw
   const int _microsecond = getApbFrequency()/1000000;
   tm_control = timerBegin(0,_microsecond,true);
-  tm_sensor = timerBegin(2,_microsecond,true);
-  tm_wifi = timerBegin(3,_microsecond,true);
+  tm_imu = timerBegin(2,_microsecond,true);
+  tm_rssi = timerBegin(3,_microsecond,true);
   timerAttachInterrupt(tm_control, &onTimer_control, true);
-  timerAttachInterrupt(tm_sensor, &onTimer_sensor, true);
-  timerAttachInterrupt(tm_wifi, &onTimer_wifi, true);
+  timerAttachInterrupt(tm_imu, &onTimer_imu, true);
+  timerAttachInterrupt(tm_rssi, &onTimer_rssi, true);
 
   //割り込み設定
   timerAlarmWrite(tm_control,_controlcycle_us,true);
-  timerAlarmWrite(tm_sensor,_sensorcycle_us,true);
-  timerAlarmWrite(tm_wifi,BROADCAST_FREQ_HZ,true);
+  timerAlarmWrite(tm_imu,_sensorcycle_us,true);
+  timerAlarmWrite(tm_rssi,_rssicycle_us,true);
 
+  //WiFi接続
+  WiFi.mode(WIFI_STA);
+  //WiFi.disconnect();
+  WiFi.begin(ssid,pass);
+  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED){
+    is_udp_enable = false;
+    Serial.println("fail");
+  }
+  
   //タイマー起動
+  timerAlarmEnable(tm_rssi);
   timerAlarmEnable(tm_control);
-  timerAlarmEnable(tm_sensor);
-  timerAlarmEnable(tm_wifi);
+  timerAlarmEnable(tm_imu);
 
-  vTaskDelay(3000/portTICK_RATE_MS);
   Serial.printf("setup finished.\r\n");
   }
 
 
 void loop() {
+  sendUDP();
   delay(1);
 }
