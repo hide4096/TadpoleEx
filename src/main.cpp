@@ -5,24 +5,24 @@
 #include <WiFi.h>
 #include <AsyncUDP.h>
 #include <math.h>
+#include <WiFiScan.h>
 #include "icm20648.h"
 #include "VL53L1X.h"
 #include "esp32-hal-ledc.h"
 #include "sbus.h"
 #include "MadgwickAHRS.h"
-#include <WiFiScan.h>
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
 #define LPF_GAIN 0.1
 #define LPF_GAIN_ALT 0.8
-#define LPF_GAIN_RSSI 0.2
+#define LPF_GAIN_RSSI 0.8
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000
 
-#define CRUSE_ALT 500
-#define R_TXPOWER -55
-#define L_TXPOWER -55
+#define CRUSE_ALT 750
+#define R_TXPOWER -60
+#define L_TXPOWER -60
 #define LAND_RSSI -35
 #define DROP_RSSI -50
 
@@ -213,14 +213,14 @@ float before_pitch,I_pitch,target_pitch;
 float pitch_kp=1000.0,pitch_ki = 0.0,pitch_kd=2000.0;
 
 float before_roll,I_roll,target_roll;
-float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1000.0;
+float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1500.0;
 
 float before_alt,I_alt,target_alt;
-float alt_kp=1.0,alt_ki = 0.0, alt_kd=0.5;
+float alt_kp = 1.0,alt_ki = 0.01, alt_kd=0.6;
 
 //方位（起動時の機首方向を0）指定で飛行
 float before_auto,I_auto,target_auto;
-float auto_kp=1.0,auto_ki = 0.0, auto_kd=0.0;
+float auto_kp=1.1,auto_ki = 0.0, auto_kd=0.0;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
@@ -232,10 +232,10 @@ void IRAM_ATTR PIDcontrol(){
   
   switch(autopilot){
     case 1:
-      Output_SBUS[THR] = 1800;
+      Output_SBUS[THR] = 1700;
       break;
     case 2:
-      Output_SBUS[THR] = 650;
+      Output_SBUS[THR] = 1400;
       break;
     case 3:
       Output_SBUS[THR] = 0;
@@ -257,6 +257,7 @@ void IRAM_ATTR PIDcontrol(){
 
   if(autopilot == 2){
     float diff_auto = yaw - target_auto;
+    //float diff_auto = RW_diff;
     target_roll = diff_auto * auto_kp + I_auto * auto_ki - (before_auto - diff_auto) * auto_kd;
     before_auto = diff_auto;
     I_auto += diff_auto;
@@ -301,7 +302,7 @@ void Modecontrol(){
   if(sbus_data[CH8] > 1536){
     if(is_first_run) target_alt = -1.0;
     target_roll = 0;
-    target_pitch = 20.0 * DEG2RAD;
+    target_pitch = 15.0 * DEG2RAD;
   }else if(sbus_data[CH8] < 512){
     if(is_first_run) target_alt = -1.0;
     target_roll = -35*DEG2RAD;
@@ -310,7 +311,7 @@ void Modecontrol(){
     //自動操縦
     if(is_first_run){
       autopilot = 1;
-      target_pitch = 15.0 * DEG2RAD;
+      target_pitch = 20.0 * DEG2RAD;
       target_roll = 0.0;
       target_alt = -1.0;
       is_drop = false;
@@ -321,7 +322,8 @@ void Modecontrol(){
     }
     if(autopilot == 1 && altitude > 50.0){
       target_pitch = 5.0 * DEG2RAD;
-      target_alt = CRUSE_ALT;
+      //target_alt = CRUSE_ALT;
+      target_alt = -1.0;
       target_auto = 45.0 * DEG2RAD;
       autopilot = 2;
     }
