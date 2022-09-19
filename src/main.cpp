@@ -21,13 +21,15 @@
 #define I_MAX 10000
 
 #define CRUSE_ALT 750
-#define R_TXPOWER -60
-#define L_TXPOWER -60
-#define LAND_RSSI -35
-#define DROP_RSSI -50
+#define R_TXPOWER     -60
+#define L_TXPOWER     -60
+#define DROP_TXPOWER  -29
 
-#define R_GAIN 20.0
-#define L_GAIN 20.0
+#define R_GAIN    20.0
+#define L_GAIN    20.0
+#define DROP_GAIN 20.0
+
+#define DROP_RANGE 300
   
 #define AIL 0
 #define ELE 1
@@ -38,12 +40,15 @@
 #define CH7 6
 #define CH8 7
 
+//制御周波数の設定
 const int _servofreq_Hz = 50;
 const int _beaconfreq_Hz = 25;
+const int _sensorfreq_Hz = 1000;
 const int _controlcycle_us = 1000000 / _servofreq_Hz;
 const int _rssicycle_us = 1000000 / _beaconfreq_Hz;
+const int _sensorcycle_us = 1000000 / _sensorfreq_Hz;
 
-//セマフォとかタイマーとか
+//セマフォとかタイマーの初期化
 volatile SemaphoreHandle_t sp_control;
 volatile SemaphoreHandle_t sp_imu;
 volatile SemaphoreHandle_t sp_rssi;
@@ -65,7 +70,6 @@ icm20648 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
 float x_acc,y_acc,z_acc;
-float pitch_gyr,yaw_gyr,roll_gyr;
 float ax=0,ay=0,az=0;
 float lx=0,ly=0,lz=0;
 float ox=0,oy=0,oz=0;
@@ -74,7 +78,7 @@ Madgwick mdf;
 //ToFセンサ
 VL53L1X dist;
 float distance_Tof = 0.0;
-float altitude = 0.0;
+float altitude = 100.0;
 float climb_speed = 0.0;
 
 //クォータニオン
@@ -83,18 +87,29 @@ float q0q1,q0q2,q0q3;
 float q1q2,q1q3;
 float q2q3;
 
+/*
+  センサ読み取るよ
+
+  Madgwickフィルタから姿勢の読み取り
+  ToFセンサの読み取り
+  ToFセンサ値から高度への変換
+*/
 void IRAM_ATTR readSensor(){
   pitch = mdf.getRollRadians();
   yaw = mdf.getYawRadians();
   roll = mdf.getPitchRadians();
-  pitch_gyr = lx;
-  yaw_gyr = lz;
-  roll_gyr = ly;
 
-  distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
-  altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
+  //distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
+  //altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
 }
 
+/*
+  Madgiwickフィルタ更新するよ
+
+  LPFかける
+  Madgiwickフィルタアップデート
+  加速度を絶対座標系に変換
+*/
 void IRAM_ATTR getPosture(){
   //ジャイロにオフセットとローパスフィルタ
   float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
@@ -118,23 +133,29 @@ void IRAM_ATTR getPosture(){
   y_acc = 2*(q1q2 + q0q3)*ax + (q0q0 - q1q1 + q2q2 - q3q3)*ay + 2*(q2q3 - q0q1)*az;
   z_acc = 2*(q1q3 - q0q2)*ax + 2*(q2q3 + q0q1)*ay + (q0q0 - q1q1 - q2q2 + q3q3)*az;
 }
-
-//WiFi強度の取得
-float RW_R = 0,RW_L = 0;
+/*
+  WiFi強度を取得するよ
+  スキャン対象:2.4GHzの9ch
+  RW左右の強度の差分はLPFかける
+*/
+float RW_R = 0,RW_L = 0,DROP = 0;
 float RW_diff = 0.0;
-int DROP = 0,RW_R_raw = 0,RW_L_raw = 0;
+int DROP_raw = 0,RW_R_raw = 0,RW_L_raw = 0;
+
 void GetRSSI(){
   int num_ap= WiFi.scanNetworks(false,false,false,30,9);
   for(int i = 0;i<num_ap;i++){
     String ssid_fetch = WiFi.SSID(i);
     if(ssid_fetch == "Runway_L") RW_L_raw = WiFi.RSSI(i);
     else if(ssid_fetch == "Runway_R") RW_R_raw = WiFi.RSSI(i);
-    else if(ssid_fetch == "TadpoleEx") DROP = WiFi.RSSI(i);
+    else if(ssid_fetch == "Drop") DROP_raw = WiFi.RSSI(i);
   }
   if(RW_L_raw >= 0) RW_L_raw = -100.0;
-  RW_L = pow(10.0,(L_TXPOWER - RW_L_raw) / L_GAIN);
   if(RW_R_raw >= 0) RW_R_raw = -100.0; 
-  RW_R = pow(10.0,(R_TXPOWER - RW_R_raw) / R_GAIN);
+  if(DROP_raw >= 0) DROP_raw = -100.0; 
+  RW_L = pow(10.0,(L_TXPOWER - RW_L_raw)    / L_GAIN);
+  RW_R = pow(10.0,(R_TXPOWER - RW_R_raw)    / R_GAIN);
+  DROP = pow(10.0,(DROP_TXPOWER - DROP_raw) / DROP_GAIN);
   RW_diff = RW_diff * LPF_GAIN_RSSI + (RW_R - RW_L) * (1.0-LPF_GAIN_RSSI);
 }
 
@@ -167,7 +188,7 @@ bool is_CH5_reset = true;
 //サーボ制御
 void IRAM_ATTR controlServos(){
   //投下機構
-  if(sbus_data[CH5] > 1024){
+  if(sbus_data[AIL] > 1024 + DROP_RANGE || sbus_data[AIL] < 1024 - DROP_RANGE){
     if(is_CH5_reset){
       if(CH5_State == 0){
         Output_SBUS[CH5] = 0;
@@ -206,21 +227,18 @@ void IRAM_ATTR readSBUS(){
 */
 uint8_t autopilot = 0;
 bool is_drop = false;
-uint16_t autothr = 0;
 
-//PID制御
+//PIDゲイン
 float before_pitch,I_pitch,target_pitch;
 float pitch_kp=1000.0,pitch_ki = 0.0,pitch_kd=2000.0;
-
 float before_roll,I_roll,target_roll;
 float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1500.0;
-
 float before_alt,I_alt,target_alt;
 float alt_kp = 1.0,alt_ki = 0.01, alt_kd=0.6;
 
 //方位（起動時の機首方向を0）指定で飛行
 float before_auto,I_auto,target_auto;
-float auto_kp=1.1,auto_ki = 0.0, auto_kd=0.0;
+float auto_kp=1.1,auto_ki = 0.0, auto_kd=0.5;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
@@ -235,7 +253,7 @@ void IRAM_ATTR PIDcontrol(){
       Output_SBUS[THR] = 1700;
       break;
     case 2:
-      Output_SBUS[THR] = 1400;
+      Output_SBUS[THR] = 600;
       break;
     case 3:
       Output_SBUS[THR] = 0;
@@ -256,15 +274,15 @@ void IRAM_ATTR PIDcontrol(){
   
 
   if(autopilot == 2){
-    float diff_auto = yaw - target_auto;
-    //float diff_auto = RW_diff;
+    //float diff_auto = yaw - target_auto;
+    float diff_auto = RW_diff;
     target_roll = diff_auto * auto_kp + I_auto * auto_ki - (before_auto - diff_auto) * auto_kd;
     before_auto = diff_auto;
     I_auto += diff_auto;
     if(I_auto > I_MAX ) I_auto = I_MAX;
     else if(I_auto < -I_MAX) I_auto = -I_MAX;
 
-    if(is_drop) sbus_data[CH5] = 0;
+    if(is_drop) sbus_data[AIL] = 0;
   }
 
   float diff_roll = target_roll - roll;
@@ -275,13 +293,18 @@ void IRAM_ATTR PIDcontrol(){
   else if(I_roll < -I_MAX) I_roll = -I_MAX;
 }
 
+/*
+  自動操縦するよ
+*/
 bool is_first_run = true;
 
 void Modecontrol(){
-  for(int i = 0;i<4;i++){
+  //ELE,THR,RUDを出力へ反映
+  for(int i = 1;i<4;i++){
     Output_SBUS[i] = sbus_data[i];
   }
-  //CH6で自動操縦切り替え
+
+  //CH6(SwF)で自動操縦切り替え
   if(sbus_data[CH6] > 1024){
     is_first_run = true;
     autopilot = false;
@@ -289,6 +312,7 @@ void Modecontrol(){
     return;
   }
 
+  //自動操縦開始時の初期化処理
   if(is_first_run){
     I_pitch = 0.0;
     I_roll = 0.0;
@@ -299,15 +323,8 @@ void Modecontrol(){
     digitalWrite(AUTOLED,HIGH);
   }
 
-  if(sbus_data[CH8] > 1536){
-    if(is_first_run) target_alt = -1.0;
-    target_roll = 0;
-    target_pitch = 15.0 * DEG2RAD;
-  }else if(sbus_data[CH8] < 512){
-    if(is_first_run) target_alt = -1.0;
-    target_roll = -35*DEG2RAD;
-    target_pitch = 15.0 * DEG2RAD;
-  }else{
+  //CH5(SwD)で自動離着陸切り替え
+  if(sbus_data[CH5] > 1024){
     //自動操縦
     if(is_first_run){
       autopilot = 1;
@@ -316,30 +333,49 @@ void Modecontrol(){
       target_alt = -1.0;
       is_drop = false;
     }
-    if(autopilot == 1){
+    switch (autopilot){
+    case 1:
       I_pitch = 0.0;
       I_roll = 0.0;
-    }
-    if(autopilot == 1 && altitude > 50.0){
-      target_pitch = 5.0 * DEG2RAD;
-      //target_alt = CRUSE_ALT;
-      target_alt = -1.0;
-      target_auto = 45.0 * DEG2RAD;
-      autopilot = 2;
-    }
-    if(autopilot == 2){
-      if((RW_L + RW_R < 1.0)) autopilot = 3;
-      if(DROP > DROP_RSSI) is_drop = true;
-    }
-    if(autopilot == 3){
+      if(altitude > 50.0){
+        target_pitch = 5.0 * DEG2RAD;
+        //target_alt = CRUSE_ALT;
+        target_alt = -1.0;
+        target_auto = 45.0 * DEG2RAD;
+        autopilot = 2;
+      }
+    break;
+    
+    case 2:
+      if((RW_L + RW_R < 2.0)) autopilot = 3;
+      if(DROP < 3.0) is_drop = true;
+    break;
+
+    case 3:
       target_roll = 0.0;
       target_pitch = 0.0;
       target_alt = -1.0;
+    break;
+    
+    default:
+    break;
+    }
+  }else{
+    //CH8(SwE)でモード切り替え
+    if(sbus_data[CH8] > 1536){
+      if(is_first_run) target_alt = -1.0;
+      target_roll = 0;
+      target_pitch = 15.0 * DEG2RAD;
+    }else if(sbus_data[CH8] < 512){
+      if(is_first_run) target_alt = -1.0;
+      target_roll = -35*DEG2RAD;
+      target_pitch = 15.0 * DEG2RAD;
+    }else{ 
     }
   }
+
   if(is_first_run) is_first_run = false;
-  PIDcontrol();
-  
+  PIDcontrol();  
   return;
 }
 
@@ -353,16 +389,15 @@ void Modecontrol(){
   対地高度[mm]
 
 */
-
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
-      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%d,%d,%d",
+      sprintf(str,"%ld,%.3f,%.3f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f,%d,%d,%d,%d",
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
         (RW_L+RW_R)/2.0,RW_diff,
-        altitude,autopilot,RW_L_raw,RW_R_raw
+        altitude,autopilot,RW_L_raw,RW_R_raw,DROP_raw
       );
     }else{
       sprintf(str,"Soiya");
@@ -370,7 +405,7 @@ void IRAM_ATTR sendUDP(){
     udp.broadcastTo(str,8901);
 }
 
-//制御系（サーボのPWM周波数に合わせて50Hz）
+//サーボ制御・自動操縦ループ
 void control(void *pvParam){
   while(1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
@@ -379,17 +414,7 @@ void control(void *pvParam){
   }
 }
 
-//センサ処理
-const int _sensorfreq_Hz = 1000;
-const int _sensorcycle_us = 1000000 / _sensorfreq_Hz;
-void fetchIMU(void *pvParam){
-  while(1){
-    xSemaphoreTake(sp_imu,portMAX_DELAY);
-    getPosture();
-  }
-}
-
-//各種センサ取得
+//各種センサ取得ループ
 void fetchInput(void *pvParam){
   while (1){
     xSemaphoreTake(sp_control,portMAX_DELAY);
@@ -399,7 +424,15 @@ void fetchInput(void *pvParam){
   }
 }
 
-//RSSI取得
+//Madgwickフィルタ更新ループ
+void fetchIMU(void *pvParam){
+  while(1){
+    xSemaphoreTake(sp_imu,portMAX_DELAY);
+    getPosture();
+  }
+}
+
+//RSSI取得ループ
 void fetchRSSI(void *pvParam){
   while (1){
     xSemaphoreTake(sp_rssi,portMAX_DELAY);
@@ -408,6 +441,10 @@ void fetchRSSI(void *pvParam){
   }
 }
 
+/*
+  割り込み呼び出し用関数
+  タイマー割り込み来たらセマフォいじるだけ
+*/
 void IRAM_ATTR onTimer_control(){
   xSemaphoreGiveFromISR(sp_control,NULL);
 }
@@ -417,8 +454,6 @@ void IRAM_ATTR onTimer_imu(){
 void IRAM_ATTR onTimer_rssi(){
   xSemaphoreGiveFromISR(sp_rssi,NULL);
 }
-
-bool is_udp_enable = true;
 
 void setup() {
   //シリアル通信開始
@@ -449,6 +484,7 @@ void setup() {
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
 
   //ToFセンサ
+  /*
   Wire.begin();
   Wire.setClock(400 * 1000);
   dist.setTimeout(1000);
@@ -456,6 +492,7 @@ void setup() {
   dist.setDistanceMode(VL53L1X::Medium);
   dist.setMeasurementTimingBudget(50000);
   dist.startContinuous(50);
+  */
 
   //LED設定
   pinMode(AUTOLED,OUTPUT);
@@ -494,11 +531,8 @@ void setup() {
   WiFi.mode(WIFI_STA);
   //WiFi.disconnect();
   WiFi.begin(ssid,pass);
-  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED){
-    is_udp_enable = false;
-    Serial.println("fail");
-  }
-  
+  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED)Serial.println("fail");
+
   //タイマー起動
   timerAlarmEnable(tm_rssi);
   timerAlarmEnable(tm_control);
