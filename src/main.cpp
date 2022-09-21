@@ -20,7 +20,7 @@
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000
 
-#define CRUSE_ALT 750
+#define CRUSE_ALT 500
 #define R_TXPOWER     -60
 #define L_TXPOWER     -60
 #define DROP_TXPOWER  -29
@@ -99,8 +99,8 @@ void IRAM_ATTR readSensor(){
   yaw = mdf.getYawRadians();
   roll = mdf.getPitchRadians();
 
-  //distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
-  //altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
+  distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
+  altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
 }
 
 /*
@@ -230,19 +230,19 @@ bool is_drop = false;
 
 //PIDゲイン
 float before_pitch,I_pitch,target_pitch;
-float pitch_kp=1000.0,pitch_ki = 0.0,pitch_kd=2000.0;
+float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=2000.0;
 float before_roll,I_roll,target_roll;
-float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1500.0;
-float before_alt,I_alt,target_alt;
-float alt_kp = 1.0,alt_ki = 0.01, alt_kd=0.6;
+float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1000.0;
+float before_alt,I_alt,target_alt,before_altitude = 0;
+float alt_kp = 1.0,alt_ki = 0.0, alt_kd=0.0;
 
 //方位（起動時の機首方向を0）指定で飛行
 float before_auto,I_auto,target_auto;
-float auto_kp=1.1,auto_ki = 0.0, auto_kd=0.5;
+float auto_kp=0.2,auto_ki = 0.001, auto_kd=0.4;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
-  Output_SBUS[ELE] += diff_pitch * pitch_kp + I_pitch * pitch_ki - (before_pitch - pitch) * pitch_kd;
+  Output_SBUS[ELE] -= diff_pitch * pitch_kp + I_pitch * pitch_ki - (before_pitch - pitch) * pitch_kd;
   before_pitch = pitch;
   I_pitch += diff_pitch;
   if(I_pitch > I_MAX ) I_pitch = I_MAX;
@@ -253,7 +253,7 @@ void IRAM_ATTR PIDcontrol(){
       Output_SBUS[THR] = 1700;
       break;
     case 2:
-      Output_SBUS[THR] = 600;
+      Output_SBUS[THR] = 900;
       break;
     case 3:
       Output_SBUS[THR] = 0;
@@ -262,20 +262,18 @@ void IRAM_ATTR PIDcontrol(){
       break;
   }
 
-  if(target_alt > 0){
-    float diff_alt = target_alt - altitude;
-    Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
-    before_alt = diff_alt;
-    I_alt += diff_alt;
-    if(I_alt > I_MAX ) I_alt = I_MAX;
-    else if(I_alt < -I_MAX) I_alt = -I_MAX;
-  }
-
   
+  float diff_alt = before_altitude - altitude;
+  Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
+  before_altitude = altitude;
+  before_alt = diff_alt;
+  I_alt += diff_alt;
+  if(I_alt > I_MAX ) I_alt = I_MAX;
+  else if(I_alt < -I_MAX) I_alt = -I_MAX;
 
   if(autopilot == 2){
-    //float diff_auto = yaw - target_auto;
-    float diff_auto = RW_diff;
+    float diff_auto = yaw - target_auto;
+    //float diff_auto = RW_diff;
     target_roll = diff_auto * auto_kp + I_auto * auto_ki - (before_auto - diff_auto) * auto_kd;
     before_auto = diff_auto;
     I_auto += diff_auto;
@@ -330,18 +328,18 @@ void Modecontrol(){
       autopilot = 1;
       target_pitch = 20.0 * DEG2RAD;
       target_roll = 0.0;
-      target_alt = -1.0;
+      target_alt = 0.0;
       is_drop = false;
     }
     switch (autopilot){
     case 1:
       I_pitch = 0.0;
       I_roll = 0.0;
-      if(altitude > 50.0){
-        target_pitch = 5.0 * DEG2RAD;
-        //target_alt = CRUSE_ALT;
-        target_alt = -1.0;
-        target_auto = 45.0 * DEG2RAD;
+      I_alt = 0.0;
+      if(altitude > CRUSE_ALT){
+        target_pitch = 10.0 * DEG2RAD;
+        target_alt = 0;
+        target_auto = 0.0 * DEG2RAD;
         autopilot = 2;
       }
     break;
@@ -362,15 +360,16 @@ void Modecontrol(){
     }
   }else{
     //CH8(SwE)でモード切り替え
-    if(sbus_data[CH8] > 1536){
-      if(is_first_run) target_alt = -1.0;
-      target_roll = 0;
+    if(sbus_data[CH8] > 1536){        //UP
+      if(is_first_run) target_alt = 0;
+      target_roll = 50*DEG2RAD;
       target_pitch = 15.0 * DEG2RAD;
-    }else if(sbus_data[CH8] < 512){
-      if(is_first_run) target_alt = -1.0;
-      target_roll = -35*DEG2RAD;
+    }else if(sbus_data[CH8] < 512){   //DOWN
+      if(is_first_run) target_alt = 0;
+      target_roll = -50*DEG2RAD;
       target_pitch = 15.0 * DEG2RAD;
-    }else{ 
+    }else{                            //MIDDLE
+      
     }
   }
 
@@ -484,7 +483,6 @@ void setup() {
   ox/=1000.0,oy/=1000.0,oz/=1000.0;
 
   //ToFセンサ
-  /*
   Wire.begin();
   Wire.setClock(400 * 1000);
   dist.setTimeout(1000);
@@ -492,7 +490,6 @@ void setup() {
   dist.setDistanceMode(VL53L1X::Medium);
   dist.setMeasurementTimingBudget(50000);
   dist.startContinuous(50);
-  */
 
   //LED設定
   pinMode(AUTOLED,OUTPUT);
