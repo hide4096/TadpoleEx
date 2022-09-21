@@ -20,7 +20,8 @@
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000
 
-#define CRUSE_ALT 500
+#define CLIMBALT 3500
+#define TAKEOFF_ALT   300
 #define R_TXPOWER     -60
 #define L_TXPOWER     -60
 #define DROP_TXPOWER  -29
@@ -234,7 +235,7 @@ float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=2000.0;
 float before_roll,I_roll,target_roll;
 float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1000.0;
 float before_alt,I_alt,target_alt,before_altitude = 0;
-float alt_kp = 1.0,alt_ki = 0.0, alt_kd=0.0;
+float alt_kp = 1.0,alt_ki = 0.001, alt_kd=0.0;
 
 //方位（起動時の機首方向を0）指定で飛行
 float before_auto,I_auto,target_auto;
@@ -253,7 +254,7 @@ void IRAM_ATTR PIDcontrol(){
       Output_SBUS[THR] = 1700;
       break;
     case 2:
-      Output_SBUS[THR] = 900;
+      Output_SBUS[THR] = 1000;
       break;
     case 3:
       Output_SBUS[THR] = 0;
@@ -295,6 +296,8 @@ void IRAM_ATTR PIDcontrol(){
   自動操縦するよ
 */
 bool is_first_run = true;
+float calc_yawrate_before = 0.0;
+float I_turn = 0.0;
 
 void Modecontrol(){
   //ELE,THR,RUDを出力へ反映
@@ -318,8 +321,16 @@ void Modecontrol(){
     before_alt = 0.0;
     before_pitch = 0.0;
     before_roll = 0.0;
+    calc_yawrate_before = yaw;
     digitalWrite(AUTOLED,HIGH);
   }
+
+  //絶対座標系のヨー増分を計算
+  float yaw_now = yaw;
+  float yawrate = yaw_now - calc_yawrate_before;
+  calc_yawrate_before = yaw_now;
+  if(yawrate > M_PI) yawrate-=2*M_PI;
+  if(yawrate < -M_PI) yawrate+=2*M_PI;
 
   //CH5(SwD)で自動離着陸切り替え
   if(sbus_data[CH5] > 1024){
@@ -336,10 +347,10 @@ void Modecontrol(){
       I_pitch = 0.0;
       I_roll = 0.0;
       I_alt = 0.0;
-      if(altitude > CRUSE_ALT){
+      if(altitude > TAKEOFF_ALT){
         target_pitch = 10.0 * DEG2RAD;
         target_alt = 0;
-        target_auto = 0.0 * DEG2RAD;
+        target_auto = 3.9 * DEG2RAD;
         autopilot = 2;
       }
     break;
@@ -351,8 +362,8 @@ void Modecontrol(){
 
     case 3:
       target_roll = 0.0;
-      target_pitch = 0.0;
-      target_alt = -1.0;
+      target_pitch = -5.0;
+      target_alt = -5.0;
     break;
     
     default:
@@ -360,16 +371,38 @@ void Modecontrol(){
     }
   }else{
     //CH8(SwE)でモード切り替え
-    if(sbus_data[CH8] > 1536){        //UP
-      if(is_first_run) target_alt = 0;
-      target_roll = 50*DEG2RAD;
-      target_pitch = 15.0 * DEG2RAD;
-    }else if(sbus_data[CH8] < 512){   //DOWN
-      if(is_first_run) target_alt = 0;
-      target_roll = -50*DEG2RAD;
-      target_pitch = 15.0 * DEG2RAD;
-    }else{                            //MIDDLE
-      
+    if(sbus_data[CH8] < 512){        //UP（上昇旋回）
+      if(is_first_run){
+        target_alt = 0;
+        target_roll = 50*DEG2RAD;
+        target_pitch = 15.0 * DEG2RAD;
+        I_turn = 0;
+      }
+      if(I_turn <= M_PI*4){
+        target_alt = 0
+        I_turn += yawrate;
+      }else{
+        if(altitude < CLIMBALT) target_alt = 5.0;
+        else target_alt = 0.0;
+      }
+    }else if(sbus_data[CH8] > 1536){   //DOWN（水平旋回）
+      if(is_first_run){
+        target_alt = 0;
+        target_roll = -50*DEG2RAD;
+        target_pitch = 15.0 * DEG2RAD;
+      }
+    }else{                            //MIDDLE（8の字旋回）
+      if(is_first_run){
+        target_alt = 0;
+        target_pitch = 15.0 * DEG2RAD;
+        I_turn = 0;
+      }
+      if(I_turn <= M_PI*2){
+        target_roll = 50*DEG2RAD;
+        I_turn+= yawrate;
+      }else{
+        target_roll = -50*DEG2RAD;
+      }
     }
   }
 
