@@ -97,7 +97,7 @@ float q2q3;
 */
 void IRAM_ATTR readSensor(){
   pitch = mdf.getRollRadians();
-  yaw = mdf.getYawRadians();
+  yaw = mdf.getYawRadians()*-1.0;
   roll = mdf.getPitchRadians();
 
   distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
@@ -379,7 +379,7 @@ void Modecontrol(){
         I_turn = 0;
       }
       if(I_turn <= M_PI*4){
-        target_alt = 0
+        target_alt = 0;
         I_turn += yawrate;
       }else{
         if(altitude < CLIMBALT) target_alt = 5.0;
