@@ -251,10 +251,10 @@ void IRAM_ATTR PIDcontrol(){
   
   switch(autopilot){
     case 1:
-      Output_SBUS[THR] = 1700;
+      Output_SBUS[THR] = 1500;
       break;
     case 2:
-      Output_SBUS[THR] = 800;
+      Output_SBUS[THR] = 900;
       break;
     case 3:
       Output_SBUS[THR] = 0;
@@ -374,8 +374,8 @@ void Modecontrol(){
     if(sbus_data[CH8] < 512){        //UP（上昇旋回）
       if(is_first_run){
         target_alt = 0;
-        target_roll = 50*DEG2RAD;
-        target_pitch = 15.0 * DEG2RAD;
+        target_roll = 40*DEG2RAD;
+        target_pitch = 20.0 * DEG2RAD;
         I_turn = 0;
       }
       if(I_turn <= M_PI*4){
@@ -388,20 +388,20 @@ void Modecontrol(){
     }else if(sbus_data[CH8] > 1536){   //DOWN（水平旋回）
       if(is_first_run){
         target_alt = 0;
-        target_roll = -50*DEG2RAD;
-        target_pitch = 15.0 * DEG2RAD;
+        target_roll = -40*DEG2RAD;
+        target_pitch = 20.0 * DEG2RAD;
       }
     }else{                            //MIDDLE（8の字旋回）
       if(is_first_run){
         target_alt = 0;
-        target_pitch = 15.0 * DEG2RAD;
+        target_pitch = 20.0 * DEG2RAD;
         I_turn = 0;
       }
       if(I_turn <= M_PI*2){
-        target_roll = 50*DEG2RAD;
+        target_roll = 45*DEG2RAD;
         I_turn+= yawrate;
       }else{
-        target_roll = -50*DEG2RAD;
+        target_roll = -40*DEG2RAD;
       }
     }
   }
