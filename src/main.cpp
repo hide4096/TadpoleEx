@@ -231,7 +231,7 @@ bool is_drop = false;
 
 //PIDゲイン
 float before_pitch,I_pitch,target_pitch;
-float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=2000.0;
+float pitch_kp=900.0,pitch_ki = 0.0,pitch_kd=2000.0;
 float before_roll,I_roll,target_roll;
 float roll_kp=700.0,roll_ki = 0.0,roll_kd=1000.0;
 float before_alt,I_alt,target_alt,before_altitude = 0;
@@ -251,7 +251,7 @@ void IRAM_ATTR PIDcontrol(){
   
   switch(autopilot){
     case 1:
-      Output_SBUS[THR] = 1500;
+      Output_SBUS[THR] = 1300;
       break;
     case 2:
       Output_SBUS[THR] = 900;
