@@ -233,7 +233,7 @@ bool is_drop = false;
 float before_pitch,I_pitch,target_pitch;
 float pitch_kp=800.0,pitch_ki = 0.0,pitch_kd=2000.0;
 float before_roll,I_roll,target_roll;
-float roll_kp=1000.0,roll_ki = 0.0,roll_kd=1000.0;
+float roll_kp=700.0,roll_ki = 0.0,roll_kd=1000.0;
 float before_alt,I_alt,target_alt,before_altitude = 0;
 float alt_kp = 1.0,alt_ki = 0.001, alt_kd=0.0;
 
@@ -254,7 +254,7 @@ void IRAM_ATTR PIDcontrol(){
       Output_SBUS[THR] = 1700;
       break;
     case 2:
-      Output_SBUS[THR] = 1000;
+      Output_SBUS[THR] = 800;
       break;
     case 3:
       Output_SBUS[THR] = 0;
