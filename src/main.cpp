@@ -231,15 +231,15 @@ bool is_drop = false;
 
 //PIDゲイン
 float before_pitch,I_pitch,target_pitch;
-float pitch_kp=900.0,pitch_ki = 0.0,pitch_kd=2000.0;
+float pitch_kp=900.0,pitch_ki = 0.0,pitch_kd=1000.0;
 float before_roll,I_roll,target_roll;
-float roll_kp=700.0,roll_ki = 0.0,roll_kd=1000.0;
+float roll_kp=400.0,roll_ki = 0.0,roll_kd=400.0;
 float before_alt,I_alt,target_alt,before_altitude = 0;
-float alt_kp = 1.0,alt_ki = 0.001, alt_kd=0.0;
+float alt_kp = 1.0,alt_ki = 0.005, alt_kd=0.0;
 
 //方位（起動時の機首方向を0）指定で飛行
 float before_auto,I_auto,target_auto;
-float auto_kp=0.2,auto_ki = 0.001, auto_kd=0.4;
+float auto_kp=0.4,auto_ki = 0.005, auto_kd=0.0;
 
 void IRAM_ATTR PIDcontrol(){
   float diff_pitch = target_pitch - pitch;
@@ -251,7 +251,7 @@ void IRAM_ATTR PIDcontrol(){
   
   switch(autopilot){
     case 1:
-      Output_SBUS[THR] = 1300;
+      Output_SBUS[THR] = 1600;
       break;
     case 2:
       Output_SBUS[THR] = 900;
@@ -337,7 +337,7 @@ void Modecontrol(){
     //自動操縦
     if(is_first_run){
       autopilot = 1;
-      target_pitch = 20.0 * DEG2RAD;
+      target_pitch = 30.0 * DEG2RAD;
       target_roll = 0.0;
       target_alt = 0.0;
       is_drop = false;
@@ -348,9 +348,9 @@ void Modecontrol(){
       I_roll = 0.0;
       I_alt = 0.0;
       if(altitude > TAKEOFF_ALT){
-        target_pitch = 10.0 * DEG2RAD;
+        target_pitch = 20.0 * DEG2RAD;
         target_alt = 0;
-        target_auto = 3.9 * DEG2RAD;
+        target_auto = 2.0 * DEG2RAD;
         autopilot = 2;
       }
     break;
@@ -374,8 +374,8 @@ void Modecontrol(){
     if(sbus_data[CH8] < 512){        //UP（上昇旋回）
       if(is_first_run){
         target_alt = 0;
-        target_roll = 40*DEG2RAD;
-        target_pitch = 20.0 * DEG2RAD;
+        target_roll = 45*DEG2RAD;
+        target_pitch = 30.0 * DEG2RAD;
         I_turn = 0;
       }
       if(I_turn <= M_PI*4){
@@ -388,20 +388,20 @@ void Modecontrol(){
     }else if(sbus_data[CH8] > 1536){   //DOWN（水平旋回）
       if(is_first_run){
         target_alt = 0;
-        target_roll = -40*DEG2RAD;
-        target_pitch = 20.0 * DEG2RAD;
+        target_roll = -45*DEG2RAD;
+        target_pitch = 30.0 * DEG2RAD;
       }
     }else{                            //MIDDLE（8の字旋回）
       if(is_first_run){
         target_alt = 0;
-        target_pitch = 20.0 * DEG2RAD;
+        target_pitch = 30.0 * DEG2RAD;
         I_turn = 0;
       }
       if(I_turn <= M_PI*2){
         target_roll = 45*DEG2RAD;
         I_turn+= yawrate;
       }else{
-        target_roll = -40*DEG2RAD;
+        target_roll = -45*DEG2RAD;
       }
     }
   }
@@ -506,7 +506,7 @@ void setup() {
   }
 
   //ジャイロオフセット
-  vTaskDelay(3000/portTICK_RATE_MS);
+  vTaskDelay(500/portTICK_RATE_MS);
   for(int i=0;i<1000;i++){
     ox+=imu.gyroX();
     oy+=imu.gyroY();
@@ -559,9 +559,9 @@ void setup() {
 
   //WiFi接続
   WiFi.mode(WIFI_STA);
-  //WiFi.disconnect();
-  WiFi.begin(ssid,pass);
-  if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED)Serial.println("fail");
+  WiFi.disconnect();
+  //WiFi.begin();
+  //if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED)Serial.println("fail");
 
   //タイマー起動
   timerAlarmEnable(tm_rssi);
@@ -573,6 +573,6 @@ void setup() {
 
 
 void loop() {
-  sendUDP();
+  //sendUDP();
   delay(1);
 }
