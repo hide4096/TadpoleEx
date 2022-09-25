@@ -22,9 +22,9 @@
 
 #define CLIMBALT 3500
 #define TAKEOFF_ALT   300
-#define R_TXPOWER     -60
+#define R_TXPOWER     -55
 #define L_TXPOWER     -60
-#define DROP_TXPOWER  -29
+#define DROP_TXPOWER  -54
 
 #define R_GAIN    20.0
 #define L_GAIN    20.0
@@ -43,7 +43,7 @@
 
 //制御周波数の設定
 const int _servofreq_Hz = 50;
-const int _beaconfreq_Hz = 25;
+const int _beaconfreq_Hz = 20;
 const int _sensorfreq_Hz = 1000;
 const int _controlcycle_us = 1000000 / _servofreq_Hz;
 const int _rssicycle_us = 1000000 / _beaconfreq_Hz;
@@ -144,12 +144,23 @@ float RW_diff = 0.0;
 int DROP_raw = 0,RW_R_raw = 0,RW_L_raw = 0;
 
 void GetRSSI(){
-  int num_ap= WiFi.scanNetworks(false,false,false,30,9);
+  int num_ap= WiFi.scanNetworks(false,false,false,30);
+  int is_fetched = 0;
   for(int i = 0;i<num_ap;i++){
     String ssid_fetch = WiFi.SSID(i);
-    if(ssid_fetch == "Runway_L") RW_L_raw = WiFi.RSSI(i);
-    else if(ssid_fetch == "Runway_R") RW_R_raw = WiFi.RSSI(i);
-    else if(ssid_fetch == "Drop") DROP_raw = WiFi.RSSI(i);
+    if(ssid_fetch == "ASOLan"){
+      RW_R_raw = WiFi.RSSI(i);
+      is_fetched++;
+    }
+    else if(ssid_fetch == "Yutonowifi"){
+      RW_L_raw = WiFi.RSSI(i);
+      is_fetched++;
+    }
+    else if(ssid_fetch == "Sphinx_0124"){
+      DROP_raw = WiFi.RSSI(i);
+      is_fetched++;
+    }
+    if(is_fetched>=2) break;
   }
   if(RW_L_raw >= 0) RW_L_raw = -100.0;
   if(RW_R_raw >= 0) RW_R_raw = -100.0; 
@@ -356,8 +367,9 @@ void Modecontrol(){
     break;
     
     case 2:
-      if((RW_L + RW_R < 2.0)) autopilot = 3;
-      if(DROP < 3.0) is_drop = true;
+      if((RW_L + RW_R < 6.0)) autopilot = 3;
+      //if((RW_R < 3.0)) autopilot = 3;
+      if(DROP < 4.0) is_drop = true;
     break;
 
     case 3:
