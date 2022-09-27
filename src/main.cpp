@@ -148,15 +148,15 @@ void GetRSSI(){
   int is_fetched = 0;
   for(int i = 0;i<num_ap;i++){
     String ssid_fetch = WiFi.SSID(i);
-    if(ssid_fetch == "ASOLan"){
+    if(ssid_fetch == "Runway_R"){
       RW_R_raw = WiFi.RSSI(i);
       is_fetched++;
     }
-    else if(ssid_fetch == "Yutonowifi"){
+    else if(ssid_fetch == "Runway_L"){
       RW_L_raw = WiFi.RSSI(i);
       is_fetched++;
     }
-    else if(ssid_fetch == "Sphinx_0124"){
+    else if(ssid_fetch == "DropPoint"){
       DROP_raw = WiFi.RSSI(i);
       is_fetched++;
     }
@@ -572,8 +572,10 @@ void setup() {
   //WiFi接続
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  //WiFi.begin();
-  //if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED)Serial.println("fail");
+  /*
+    WiFi.begin(ssid,pass);
+    if(WiFi.waitForConnectResult(WIFI_TIMEOUT_MS) != WL_CONNECTED)Serial.println("fail");
+  */
 
   //タイマー起動
   timerAlarmEnable(tm_rssi);
@@ -585,6 +587,6 @@ void setup() {
 
 
 void loop() {
-  //sendUDP();
+  //sendUDP();  //WiFi経由でログを吐く
   delay(1);
 }
