@@ -43,7 +43,7 @@
 
 //制御周波数の設定
 const int _servofreq_Hz = 50;
-const int _beaconfreq_Hz = 20;
+const int _beaconfreq_Hz = 10;
 const int _sensorfreq_Hz = 1000;
 const int _controlcycle_us = 1000000 / _servofreq_Hz;
 const int _rssicycle_us = 1000000 / _beaconfreq_Hz;
@@ -144,7 +144,7 @@ float RW_diff = 0.0;
 int DROP_raw = 0,RW_R_raw = 0,RW_L_raw = 0;
 
 void GetRSSI(){
-  int num_ap= WiFi.scanNetworks(false,false,false,30);
+  int num_ap= WiFi.scanNetworks(false,false,false,10);
   int is_fetched = 0;
   for(int i = 0;i<num_ap;i++){
     String ssid_fetch = WiFi.SSID(i);
@@ -196,13 +196,14 @@ const float _SBUS2PWM = 2.021;
 int16_t Output_SBUS[5];
 uint8_t CH5_State = 0;
 bool is_CH5_reset = true;
+bool is_drop = false;
 
 //サーボ制御
 void IRAM_ATTR controlServos(){
   //投下機構
   if(sbus_data[AIL] > 1024 + DROP_RANGE || sbus_data[AIL] < 1024 - DROP_RANGE){
     if(is_CH5_reset){
-      if(CH5_State == 0){
+      if(CH5_State == 0 || is_drop){
         Output_SBUS[CH5] = 0;
       }else{
         Output_SBUS[CH5] = 2047;
@@ -238,7 +239,6 @@ void IRAM_ATTR readSBUS(){
   3 → 着陸
 */
 uint8_t autopilot = 0;
-bool is_drop = false;
 
 //PIDゲイン
 float before_pitch,I_pitch,target_pitch;
@@ -367,14 +367,14 @@ void Modecontrol(){
     break;
     
     case 2:
-      if((RW_L + RW_R < 6.0)) autopilot = 3;
+      if((RW_L + RW_R < 2.0)) autopilot = 3;
       //if((RW_R < 3.0)) autopilot = 3;
-      if(DROP < 4.0) is_drop = true;
+      if(DROP < 3.0) is_drop = true;
     break;
 
     case 3:
       target_roll = 0.0;
-      target_pitch = -5.0;
+      target_pitch = 5.0;
       target_alt = -5.0;
     break;
     
@@ -480,7 +480,7 @@ void fetchIMU(void *pvParam){
 void fetchRSSI(void *pvParam){
   while (1){
     xSemaphoreTake(sp_rssi,portMAX_DELAY);
-    GetRSSI();
+    if(autopilot > 0)GetRSSI();
     delay(1);
   }
 }
