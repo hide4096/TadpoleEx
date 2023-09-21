@@ -25,6 +25,7 @@ SPDX-License-Identifier: BSD-3-Clause
 #define WIFI_TIMEOUT_MS 5000
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000
+#define LPF_GAIN 0.1
 
 #define CLIMBALT 3500
 #define TAKEOFF_ALT   300
@@ -74,6 +75,10 @@ std::array<int16_t,bfs::SbusRx::NUM_CH()> sbus_data;
 mpu6500 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
+float x_acc,y_acc,z_acc;
+float ax=0,ay=0,az=0;
+float lx=0,ly=0,lz=0;
+float ox=0,oy=0,oz=0;
 Madgwick mdf;
 
 //気圧センサ
@@ -89,11 +94,11 @@ float altitude;
   ToFセンサ値から高度への変換
 */
 void IRAM_ATTR readSensor(){
-  pitch = mdf.getRollRadians();
-  yaw = mdf.getYawRadians()*-1.0;
-  roll = mdf.getPitchRadians();
+  pitch = mdf.getPitchRadians()*-1.;
+  yaw = mdf.getYawRadians();
+  roll = mdf.getRollRadians();
   alt.updateSensor();
-
+  altitude = alt.altitude;
 }
 
 /*
@@ -103,12 +108,15 @@ void IRAM_ATTR readSensor(){
   加速度を絶対座標系に変換
 */
 void IRAM_ATTR getPosture(){
-  //IMU
-  float ax = imu.accelY(),ay = imu.accelX(),az = imu.accelZ();
-  float gx = imu.gyroY(),gy = imu.gyroX(),gz = imu.gyroZ();
-
+  //ジャイロにオフセットとローパスフィルタ
+  float gx = (imu.gyroX()-ox),gy = (imu.gyroY()-oy),gz=(imu.gyroZ()-oz);
+  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
+  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
+  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
+  //加速度
+  ax = imu.accelX(),ay = imu.accelY(),az = imu.accelZ();
   //姿勢計算
-  mdf.updateIMU(gx,gy,gz,ax,ay,az);
+  mdf.updateIMU(lx,ly,lz,ax,ay,az);
 }
 
 /*
@@ -169,18 +177,9 @@ bool is_drop = false;
 void IRAM_ATTR controlServos(){
   //投下機構
   if(sbus_data[AIL] > 1024 + DROP_RANGE || sbus_data[AIL] < 1024 - DROP_RANGE){
-    if(is_CH5_reset){
-      if(CH5_State == 0 || is_drop){
-        Output_SBUS[CH5] = 0;
-      }else{
-        Output_SBUS[CH5] = 2047;
-      }
-      CH5_State = 1 - CH5_State;
-      is_CH5_reset = false;
-    }
+    Output_SBUS[CH5] = 0;
   }else{
-      is_CH5_reset = true;
-      Output_SBUS[CH5] = 960;
+    Output_SBUS[CH5] = 1200;
   }
 
   //PWM書き込み
@@ -240,7 +239,6 @@ void IRAM_ATTR PIDcontrol(){
     default:
       break;
   }
-
   
   float diff_alt = before_altitude - altitude;
   Output_SBUS[THR] += diff_alt * alt_kp + I_alt * alt_ki - (before_alt - altitude) * alt_kd;
@@ -286,8 +284,8 @@ void Modecontrol(){
   //CH6(SwF)で自動操縦切り替え
   if(sbus_data[CH6] > 1024){
     is_first_run = true;
-    autopilot = false;
-    digitalWrite(AUTOLED,LOW);
+    autopilot = 0;
+    digitalWrite(AUTOLED,HIGH);
     return;
   }
 
@@ -300,7 +298,7 @@ void Modecontrol(){
     before_pitch = 0.0;
     before_roll = 0.0;
     calc_yawrate_before = yaw;
-    digitalWrite(AUTOLED,HIGH);
+    digitalWrite(AUTOLED,LOW);
   }
 
   //絶対座標系のヨー増分を計算
@@ -483,6 +481,16 @@ void setup() {
     while(1);
   }
 
+  //ジャイロオフセット
+  vTaskDelay(500/portTICK_RATE_MS);
+  for(int i=0;i<1000;i++){
+    ox+=imu.gyroX();
+    oy+=imu.gyroY();
+    oz+=imu.gyroZ();
+    //vTaskDelay(1/portTICK_RATE_MS);
+  }
+  ox/=1000.0,oy/=1000.0,oz/=1000.0;
+
   SPIClass *bus_alt = new SPIClass(HSPI);
   bus_alt->begin();
   if(alt.init(bus_alt,_ALT_CS,0b011,0b0110,0b011,0b0000) == -1){
@@ -544,6 +552,5 @@ void setup() {
 void loop() {
   //sendUDP();  //WiFi経由でログを吐く
   delay(1);
-  Serial.println(alt.altitude);
-  //Serial.println(alt.pressure);
+  Serial.printf("%.3f\t%.3f\t%.3f\r\n",pitch,yaw,roll);
 }

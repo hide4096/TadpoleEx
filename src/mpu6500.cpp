@@ -66,7 +66,7 @@ int mpu6500::init(SPIClass* wire,int _cs){
     //スリープモード無効&温度センサ無効
     writeRegister(0x06,0b00001001);
     //レンジの調整
-    if(changeSensitivity(3,3) == -1){
+    if(changeSensitivity(2,1) == -1){
         wire->end();
         return -1;
     }
@@ -76,15 +76,15 @@ int mpu6500::init(SPIClass* wire,int _cs){
 
 /*
     ジャイロ
-    0   →   ±500dps
-    1   →   ±1000dps
-    2   →   ±2000dps
-    3   →   ±4000dps
+    0   →   ±250dps
+    1   →   ±500dps
+    2   →   ±1000dps
+    3   →   ±2000dps
     加速度
-    0   →   ±4g
-    1   →   ±8g
-    2   →   ±16g
-    3   →   ±30g
+    0   →   ±2g
+    1   →   ±4g
+    2   →   ±8g
+    3   →   ±16g
 */
 int mpu6500::changeSensitivity(uint8_t _gyro,uint8_t _accel){
     if(_gyro > 0b11 || _accel > 0b11) return -1;
@@ -144,15 +144,15 @@ int16_t mpu6500::accelZ_raw(){
 }
 
 int16_t mpu6500::gyroX_raw(){
-    return readRegister_2Byte(0x67,0x68);
+    return readRegister_2Byte(0x43,0x44);
 }
 
 int16_t mpu6500::gyroY_raw(){
-    return readRegister_2Byte(0x69,0x6A);
+    return readRegister_2Byte(0x45,0x46);
 }
 
 int16_t mpu6500::gyroZ_raw(){
-    return readRegister_2Byte(0x6B,0x6C);
+    return readRegister_2Byte(0x47,0x48);
 }
 
 float mpu6500::temp(){
