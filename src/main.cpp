@@ -27,10 +27,10 @@ SPDX-License-Identifier: BSD-3-Clause
 #define I_MAX 10000
 #define LPF_GAIN 0.1
 
-#define CLIMBALT 3500
-#define TAKEOFF_ALT   300
-#define RW_TXPOWER     -55
-#define DROP_TXPOWER  -54
+#define CLIMBALT        3500
+#define TAKEOFF_ALT     300
+#define RW_TXPOWER      -55
+#define DROP_TXPOWER    -54
 
 #define RW_GAIN    20.0
 #define DROP_GAIN 20.0
@@ -98,7 +98,7 @@ void IRAM_ATTR readSensor(){
   yaw = mdf.getYawRadians();
   roll = mdf.getRollRadians();
   alt.updateSensor();
-  altitude = alt.altitude;
+  altitude = alt.altitude*1000.;
 }
 
 /*
@@ -299,6 +299,7 @@ void Modecontrol(){
     before_roll = 0.0;
     calc_yawrate_before = yaw;
     digitalWrite(AUTOLED,LOW);
+    alt.setZeroPoint();
   }
 
   //絶対座標系のヨー増分を計算
@@ -552,5 +553,5 @@ void setup() {
 void loop() {
   //sendUDP();  //WiFi経由でログを吐く
   delay(1);
-  Serial.printf("%.3f\t%.3f\t%.3f\r\n",pitch,yaw,roll);
+  Serial.println(altitude);
 }
