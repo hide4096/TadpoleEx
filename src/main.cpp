@@ -1,13 +1,11 @@
 /* 
-########################
-    LPS-25HB Driver
-########################
 SPDX-FileCopyrightText: 2022 Aso Hidetoshi asouhide2002@gmail.com
 SPDX-License-Identifier: BSD-3-Clause
 
     Date			Author              Notes
     2022/8/15 Aso Hidetoshi       First release
     2022/9/27 Aso Hidetoshi       Win!
+    2023/9/21 Aso Hidetoshi       第19回
 */
 #include <Arduino.h>
 #include <SPI.h>
@@ -17,28 +15,23 @@ SPDX-License-Identifier: BSD-3-Clause
 #include <AsyncUDP.h>
 #include <math.h>
 #include <WiFiScan.h>
-#include "icm20648.h"
-#include "VL53L1X.h"
+#include "mpu6500.h"
+#include "dps310.h"
 #include "esp32-hal-ledc.h"
 #include "sbus.h"
 #include "MadgwickAHRS.h"
 
 #define AUTOLED 4
 #define WIFI_TIMEOUT_MS 5000
-#define LPF_GAIN 0.1
-#define LPF_GAIN_ALT 0.8
-#define LPF_GAIN_RSSI 0.8
 #define DEG2RAD M_PI/180.0
 #define I_MAX 10000
 
 #define CLIMBALT 3500
 #define TAKEOFF_ALT   300
-#define R_TXPOWER     -55
-#define L_TXPOWER     -60
+#define RW_TXPOWER     -55
 #define DROP_TXPOWER  -54
 
-#define R_GAIN    20.0
-#define L_GAIN    20.0
+#define RW_GAIN    20.0
 #define DROP_GAIN 20.0
 
 #define DROP_RANGE 300
@@ -69,7 +62,7 @@ hw_timer_t* tm_imu = NULL;
 hw_timer_t* tm_rssi = NULL;
 
 //デバッグ用WiFiAP
-const char *ssid = "TadpoleEx";
+const char *ssid = "Frogman";
 const char *pass = "07033208416"; //作者の電話番号
 AsyncUDP udp; 
 
@@ -78,26 +71,15 @@ bfs::SbusRx sbus_rx(&Serial2);
 std::array<int16_t,bfs::SbusRx::NUM_CH()> sbus_data;
 
 //6軸IMUセンサ
-icm20648 imu;
+mpu6500 imu;
 const uint8_t _IMU_CS = 5;
 float pitch,yaw,roll;
-float x_acc,y_acc,z_acc;
-float ax=0,ay=0,az=0;
-float lx=0,ly=0,lz=0;
-float ox=0,oy=0,oz=0;
 Madgwick mdf;
 
-//ToFセンサ
-VL53L1X dist;
-float distance_Tof = 0.0;
-float altitude = 100.0;
-float climb_speed = 0.0;
-
-//クォータニオン
-float q0q0,q1q1,q2q2,q3q3;
-float q0q1,q0q2,q0q3;
-float q1q2,q1q3;
-float q2q3;
+//気圧センサ
+dps310 alt;
+const uint8_t _ALT_CS = 10;
+float altitude;
 
 /*
   センサ読み取るよ
@@ -111,75 +93,49 @@ void IRAM_ATTR readSensor(){
   yaw = mdf.getYawRadians()*-1.0;
   roll = mdf.getPitchRadians();
 
-  distance_Tof = (q0q0 - q1q1 - q2q2 + q3q3) * dist.read();
-  altitude = LPF_GAIN_ALT * altitude + (1.0 - LPF_GAIN_ALT) * distance_Tof;
+  altitude = dps.getAltitude();
 }
 
 /*
   Madgiwickフィルタ更新するよ
 
-  LPFかける
   Madgiwickフィルタアップデート
   加速度を絶対座標系に変換
 */
 void IRAM_ATTR getPosture(){
-  //ジャイロにオフセットとローパスフィルタ
-  float gx = (imu.gyroX()-ox)*-1.0,gy = imu.gyroY()-oy,gz=(imu.gyroZ()-oz)*-1.0;
-  lx = LPF_GAIN * lx + (1.0 - LPF_GAIN) * gx;
-  ly = LPF_GAIN * ly + (1.0 - LPF_GAIN) * gy;
-  lz = LPF_GAIN * lz + (1.0 - LPF_GAIN) * gz;
-  //加速度
-  ax = imu.accelX()*-1.0,ay = imu.accelY(),az = imu.accelZ()*-1.0;
+  //IMU
+  float ax = imu.accelY(),ay = imu.accelX(),az = imu.accelZ();
+  float gx = imu.gyroY(),gy = imu.gyroX(),gz = imu.gyroZ();
+
   //姿勢計算
-  mdf.updateIMU(lx,ly,lz,ax,ay,az);
-
-  //絶対座標系に変換
-  float* q;
-  mdf.getQuaternion(q);
-  q0q0 = q[0]*q[0],q1q1 = q[1]*q[1],q2q2 = q[2]*q[2],q3q3 = q[3]*q[3];
-  q0q1 = q[0]*q[1],q0q2 = q[0]*q[2],q0q3 = q[0]*q[3];
-  q1q2 = q[1]*q[2],q1q3 = q[1]*q[3];
-  q2q3 = q[2]*q[3];
-
-  x_acc = (q0q0 + q1q1 - q2q2 - q3q3)*ax + 2*(q1q2 - q0q3)*ay + 2*(q1q3 + q0q2)*az;
-  y_acc = 2*(q1q2 + q0q3)*ax + (q0q0 - q1q1 + q2q2 - q3q3)*ay + 2*(q2q3 - q0q1)*az;
-  z_acc = 2*(q1q3 - q0q2)*ax + 2*(q2q3 + q0q1)*ay + (q0q0 - q1q1 - q2q2 + q3q3)*az;
+  mdf.updateIMU(gx,gy,gz,ax,ay,az);
 }
+
 /*
   WiFi強度を取得するよ
   スキャン対象:2.4GHzの9ch
-  RW左右の強度の差分はLPFかける
 */
-float RW_R = 0,RW_L = 0,DROP = 0;
-float RW_diff = 0.0;
-int DROP_raw = 0,RW_R_raw = 0,RW_L_raw = 0;
+float RW = 0,DROP = 0;
+int DROP_raw = 0,RW_raw = 0;
 
 void GetRSSI(){
   int num_ap= WiFi.scanNetworks(false,false,false,10);
   int is_fetched = 0;
   for(int i = 0;i<num_ap;i++){
     String ssid_fetch = WiFi.SSID(i);
-    if(ssid_fetch == "Runway_R"){
-      RW_R_raw = WiFi.RSSI(i);
+    if(ssid_fetch == "Runway"){
+      RW_raw = WiFi.RSSI(i);
       is_fetched++;
-    }
-    else if(ssid_fetch == "Runway_L"){
-      RW_L_raw = WiFi.RSSI(i);
-      is_fetched++;
-    }
-    else if(ssid_fetch == "DropPoint"){
+    }else if(ssid_fetch == "DropPoint"){
       DROP_raw = WiFi.RSSI(i);
       is_fetched++;
     }
     if(is_fetched>=2) break;
   }
-  if(RW_L_raw >= 0) RW_L_raw = -100.0;
-  if(RW_R_raw >= 0) RW_R_raw = -100.0; 
+  if(RW_raw >= 0) RW_raw = -100.0; 
   if(DROP_raw >= 0) DROP_raw = -100.0; 
-  RW_L = pow(10.0,(L_TXPOWER - RW_L_raw)    / L_GAIN);
-  RW_R = pow(10.0,(R_TXPOWER - RW_R_raw)    / R_GAIN);
+  RW = pow(10.0,(RW_TXPOWER - RW_raw)    / RW_GAIN);
   DROP = pow(10.0,(DROP_TXPOWER - DROP_raw) / DROP_GAIN);
-  RW_diff = RW_diff * LPF_GAIN_RSSI + (RW_R - RW_L) * (1.0-LPF_GAIN_RSSI);
 }
 
 /*
@@ -378,8 +334,7 @@ void Modecontrol(){
     break;
     
     case 2:
-      if((RW_L + RW_R < 2.0)) autopilot = 3;
-      //if((RW_R < 3.0)) autopilot = 3;
+      if((RW < 3.0)) autopilot = 3;
       if(DROP < 3.0) is_drop = true;
     break;
 

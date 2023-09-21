@@ -1,22 +1,16 @@
-/* 
-########################
-    ICM-20648 Driver
-########################
-SPDX-FileCopyrightText: 2022 Aso Hidetoshi asouhide2002@gmail.com
-SPDX-License-Identifier: BSD-3-Clause
-
-    Date			Author              Notes
-    2022/8/22      Aso Hidetoshi       First release
-*/
-#ifndef ICM_20648_H
-#define ICM_20648_H
+#ifndef MPU6500_H
+#define MPU6500_H
 
 #include <SPI.h>
-#include <Arduino.h>
 
-class icm20648{
+#define MPU6500_WHO_AM_I 0x70
+#define RETRY_INIT 5
+#define TEMP_SENSITIVITY 333.87
+#define TEMP_OFFSET 21.0
+
+class mpu6500{
     public:
-        int init(SPIClass* wire,const uint32_t _clock,const int _cs);
+        int init(SPIClass* wire,const int _cs);
         int changeSensitivity(const uint8_t _gyro,const uint8_t _accel);
         int16_t accelX_raw();
         int16_t accelY_raw();
