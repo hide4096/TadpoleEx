@@ -1,8 +1,8 @@
 #include"dps310.h"
 #include<Arduino.h>
 
-uint8_t dps310::readRegister(uint8_t _reg){
-    uint8_t recv = 0,adrs = _adrs & ~0x80;
+uint8_t dps310::readRegister(uint8_t _adrs){
+    uint8_t recv = 0,adrs = _adrs | 0x80;
 
     mywire->beginTransaction(spi_settings);
 
@@ -16,9 +16,9 @@ uint8_t dps310::readRegister(uint8_t _reg){
     return recv;
 }
 
-void dps310::writeRegister(uint8_t _reg,uint8_t _data){
+void dps310::writeRegister(uint8_t _adrs,uint8_t _data){
     vTaskDelay(1/portTICK_PERIOD_MS);
-    uint8_t adrs = _adrs | 0x80;
+    uint8_t adrs = _adrs & 0x7F;
     mywire->beginTransaction(spi_settings);
 
     digitalWrite(cs,LOW);
@@ -44,7 +44,7 @@ void dps310::setZeroPoint(){
 int dps310::init(SPIClass* wire,int _cs,uint8_t _PM_RATE,uint8_t _PM_PRC,uint8_t _TMP_RATE,uint8_t _TMP_PRC){
     cs = _cs;
     mywire = wire;
-    spi_settings = SPISettings(5000000,MSBFIRST,SPI_MODE3);
+    spi_settings = SPISettings(10000000,MSBFIRST,SPI_MODE3);
 
     pinMode(cs,OUTPUT);
     digitalWrite(cs,HIGH);
@@ -116,16 +116,18 @@ int dps310::init(SPIClass* wire,int _cs,uint8_t _PM_RATE,uint8_t _PM_PRC,uint8_t
     while(whoami != DPS310_WHO_AM_I){
         delay(100);
         whoami = readRegister(0x0D);
+        Serial.println(whoami,HEX);
         errcnt++;
         if(errcnt >= RETRY_INIT){
-            i2c_driver_delete(port);
+            wire->end();
             return -1;
         }
     }
 
     writeRegister(0x28,0b10000000);   //温度センサ指定
+    vTaskDelay(1/portTICK_PERIOD_MS);
     if(readRegister(0x28) >> 7 != 1){
-        i2c_driver_delete(port);
+        wire->end();
         return -1;
     }
     //読み込み速度の指定
@@ -143,7 +145,7 @@ int dps310::init(SPIClass* wire,int _cs,uint8_t _PM_RATE,uint8_t _PM_PRC,uint8_t
 
     if(readRegister(0x06) != PRS_CFG && readRegister(0x07) != TMP_CFG &&
         (readRegister(0x08) & 0b1111) != MEAS_CFG && readRegister(0x09) != CFG_REG){
-        i2c_driver_delete(port);
+        wire->end();
         return -1;
     }
 

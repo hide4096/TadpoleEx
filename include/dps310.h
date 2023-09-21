@@ -34,6 +34,7 @@ class dps310{
 
         SPIClass* mywire;
         SPISettings spi_settings;
+        int cs;
         uint8_t PM_RATE;
         uint8_t PM_PRC;
         uint8_t TMP_RATE;

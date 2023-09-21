@@ -10,7 +10,7 @@
 
 class mpu6500{
     public:
-        int init(SPIClass* wire,const int _cs);
+        int init(SPIClass* wire,int _cs);
         int changeSensitivity(const uint8_t _gyro,const uint8_t _accel);
         int16_t accelX_raw();
         int16_t accelY_raw();

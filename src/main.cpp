@@ -78,7 +78,7 @@ Madgwick mdf;
 
 //気圧センサ
 dps310 alt;
-const uint8_t _ALT_CS = 10;
+const uint8_t _ALT_CS = 15;
 float altitude;
 
 /*
@@ -92,8 +92,8 @@ void IRAM_ATTR readSensor(){
   pitch = mdf.getRollRadians();
   yaw = mdf.getYawRadians()*-1.0;
   roll = mdf.getPitchRadians();
+  alt.updateSensor();
 
-  altitude = dps.getAltitude();
 }
 
 /*
@@ -398,7 +398,6 @@ void Modecontrol(){
   WiFi強度の差分,
   対地高度[mm]
 
-*/
 void IRAM_ATTR sendUDP(){
     char str[128];
     if(sbus_data[CH7] > 1024){
@@ -406,14 +405,13 @@ void IRAM_ATTR sendUDP(){
         esp_timer_get_time()/1000,
         pitch,yaw,roll,
         Output_SBUS[ELE],Output_SBUS[THR],Output_SBUS[RUD],
-        (RW_L+RW_R)/2.0,RW_diff,
-        altitude,autopilot,RW_L_raw,RW_R_raw,DROP_raw
-      );
+        altitude,autopilot,RW_raw,DROP_raw);
     }else{
       sprintf(str,"Soiya");
     }
     udp.broadcastTo(str,8901);
 }
+*/
 
 //サーボ制御・自動操縦ループ
 void control(void *pvParam){
@@ -478,32 +476,23 @@ void setup() {
   }
 
   //センサ初期化
-  if(imu.init(new SPIClass(VSPI),1000*1000,_IMU_CS) == -1){
+  SPIClass *bus_imu = new SPIClass(VSPI);
+  bus_imu->begin();
+  if(imu.init(bus_imu,_IMU_CS) == -1){
     Serial.printf("IMU init failed.\r\n");
     while(1);
   }
 
-  //ジャイロオフセット
-  vTaskDelay(500/portTICK_RATE_MS);
-  for(int i=0;i<1000;i++){
-    ox+=imu.gyroX();
-    oy+=imu.gyroY();
-    oz+=imu.gyroZ();
-    //vTaskDelay(1/portTICK_RATE_MS);
+  SPIClass *bus_alt = new SPIClass(HSPI);
+  bus_alt->begin();
+  if(alt.init(bus_alt,_ALT_CS,0b011,0b0110,0b011,0b0000) == -1){
+    Serial.printf("Pressure init failed.\r\n");
+    while(1);
   }
-  ox/=1000.0,oy/=1000.0,oz/=1000.0;
 
-  //ToFセンサ
-  Wire.begin();
-  Wire.setClock(400 * 1000);
-  dist.setTimeout(1000);
-  dist.init();
-  dist.setDistanceMode(VL53L1X::Medium);
-  dist.setMeasurementTimingBudget(50000);
-  dist.startContinuous(50);
 
   //LED設定
-  pinMode(AUTOLED,OUTPUT);
+  pinMode(AUTOLED,OUTPUT_OPEN_DRAIN);
   digitalWrite(AUTOLED,LOW);
 
   //セマフォ生成
@@ -555,4 +544,6 @@ void setup() {
 void loop() {
   //sendUDP();  //WiFi経由でログを吐く
   delay(1);
+  Serial.println(alt.altitude);
+  //Serial.println(alt.pressure);
 }

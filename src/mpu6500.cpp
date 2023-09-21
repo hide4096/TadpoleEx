@@ -36,20 +36,23 @@ uint16_t mpu6500::readRegister_2Byte(const uint8_t _Hadrs,const uint8_t _Ladrs){
     return Hrecv << 8 | Lrecv;
 }
 
-int mpu6500::init(SPIClass* wire,const int _cs){
+int mpu6500::init(SPIClass* wire,int _cs){
     mywire = wire;
     cs = _cs;
-    spi_settings = SPISettings(7000000,MSBFIRST,SPI_MODE3);
+    spi_settings = SPISettings(1000000,MSBFIRST,SPI_MODE3);
 
     pinMode(cs,OUTPUT);
     digitalWrite(cs,HIGH);
+
+    //IMUリセット
+    writeRegister(0x6B,0b10000000);
+    vTaskDelay(10/portTICK_PERIOD_MS);
 
     int errcnt = 0;
     uint8_t whoami = readWHO_AM_I();
     while(whoami != MPU6500_WHO_AM_I){
         delay(100);
         whoami = readWHO_AM_I();
-        Serial.println(whoami,HEX);
         errcnt++;
         if(errcnt >= RETRY_INIT){
             wire->end();
